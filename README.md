@@ -1,4 +1,4 @@
-> **Ryan041001 fork:** `main` automatically tracks official stable releases (initially v4.0.12); includes native Antigravity usage/timing and opt-in Pi live metrics (not a network proxy). See [fork notes, setup and build instructions](FORK-NOTES.md).
+> **Ryan041001 Custom Fork:** The `main` branch continuously synchronizes with official stable releases (initially based on v4.0.12). It integrates native Antigravity usage and high-precision timing ingestion alongside opt-in Pi real-time performance observability (non-proxy architecture). For detailed specifications, configuration, and build instructions, see [FORK-NOTES.md](FORK-NOTES.md).
 
 <div align="center">
 
@@ -329,18 +329,18 @@ For detailed guides on every feature, check out the **[User Manual](docs/user-ma
 
 ### Supported Features by Tool
 
-| Tool | Providers | Local Routing | Aggregation | Tray Switching | MCP | Skills | Prompts | Sessions | Usage Stats |
-| --- | --- | :---: | :---: | :---: | :---: | :---: | --- | :---: | :---: |
-| Claude Code | Switch | ✓ | ✓ | ✓ | ✓ | ✓ | CLAUDE.md | ✓ | ✓ |
-| Claude Desktop | Switch | Model Mapping only | – | ✓ | – | – | – | – | Model Mapping only |
-| Codex | Switch | ✓ | ✓ | ✓ | ✓ | ✓ | AGENTS.md | ✓ | ✓ |
-| Gemini CLI | Switch | ✓ | – | ✓ | ✓ | ✓ | GEMINI.md | ✓ | ✓ |
-| Grok Build | Switch | ✓ | – | ✓ | ✓ | ✓ | AGENTS.md | ✓ | ✓ |
-| OpenCode | Coexist | – | – | – | ✓ | ✓ | AGENTS.md | ✓ | ✓ |
-| OpenClaw | Coexist | – | – | – | – | – | Workspace editor | ✓ | – |
-| Hermes | Coexist | – | – | – | ✓ | ✓ | Memory | ✓ | – |
-| Pi | Coexist | – | – | – | ✓ | ✓ | AGENTS.md, SYSTEM.md, prompt templates | ✓ | ✓ |
-| MiniMax Code | Coexist | – | – | – | ✓ | ✓ | AGENTS.md | ✓ | ✓ |
+| Tool           | Providers |   Local Routing    | Aggregation | Tray Switching | MCP | Skills | Prompts                                | Sessions |    Usage Stats     |
+| -------------- | --------- | :----------------: | :---------: | :------------: | :-: | :----: | -------------------------------------- | :------: | :----------------: |
+| Claude Code    | Switch    |         ✓          |      ✓      |       ✓        |  ✓  |   ✓    | CLAUDE.md                              |    ✓     |         ✓          |
+| Claude Desktop | Switch    | Model Mapping only |      –      |       ✓        |  –  |   –    | –                                      |    –     | Model Mapping only |
+| Codex          | Switch    |         ✓          |      ✓      |       ✓        |  ✓  |   ✓    | AGENTS.md                              |    ✓     |         ✓          |
+| Gemini CLI     | Switch    |         ✓          |      –      |       ✓        |  ✓  |   ✓    | GEMINI.md                              |    ✓     |         ✓          |
+| Grok Build     | Switch    |         ✓          |      –      |       ✓        |  ✓  |   ✓    | AGENTS.md                              |    ✓     |         ✓          |
+| OpenCode       | Coexist   |         –          |      –      |       –        |  ✓  |   ✓    | AGENTS.md                              |    ✓     |         ✓          |
+| OpenClaw       | Coexist   |         –          |      –      |       –        |  –  |   –    | Workspace editor                       |    ✓     |         –          |
+| Hermes         | Coexist   |         –          |      –      |       –        |  ✓  |   ✓    | Memory                                 |    ✓     |         –          |
+| Pi             | Coexist   |         –          |      –      |       –        |  ✓  |   ✓    | AGENTS.md, SYSTEM.md, prompt templates |    ✓     |         ✓          |
+| MiniMax Code   | Coexist   |         –          |      –      |       –        |  ✓  |   ✓    | AGENTS.md                              |    ✓     |         ✓          |
 
 - **Switch**: only one provider is active at a time; **Coexist**: multiple providers are written into the tool's own config at the same time, and you pick one inside the tool.
 - **Local Routing**: CC Switch forwards requests on your machine and converts API formats; see [Local Routing & Failover](#local-routing--failover) below. Claude Desktop providers can use "Direct" or "Model Mapping"; with "Model Mapping", requests go through local routing.

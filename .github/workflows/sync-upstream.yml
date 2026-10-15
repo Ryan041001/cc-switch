@@ -6,12 +6,12 @@ on:
   workflow_dispatch:
     inputs:
       channel:
-        description: "Official stable releases (default), or unreleased main"
+        description: "Synchronization channel: official stable release (default) or unreleased main"
         type: choice
         options: [release, main]
         default: release
       verify_current:
-        description: "Run full CI even when the selected upstream is already included"
+        description: "Force execution of full validation CI even if the upstream target is already included"
         type: boolean
         default: false
 
@@ -143,7 +143,7 @@ jobs:
             const { owner, repo } = context.repo;
             const run = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
             const marker = '<!-- cc-switch-upstream-sync -->';
-            const title = '[upstream-sync] Automatic update needs attention';
+            const title = '[upstream-sync] Automatic synchronization requires manual review';
             const failed = [process.env.PREPARE_RESULT, process.env.VALIDATE_RESULT,
               process.env.PROMOTE_RESULT].includes('failure');
             const resolved = ['published', 'already_published'].includes(process.env.PROMOTE_STATUS)
@@ -152,24 +152,30 @@ jobs:
               if (failed || resolved) {
                 const issues = await github.paginate(github.rest.issues.listForRepo,
                   { owner, repo, state: 'open', per_page: 100 });
-                const existing = issues.find(issue => !issue.pull_request && issue.title === title
+                const existing = issues.find(issue => !issue.pull_request
                   && issue.body?.includes(marker) && issue.user?.login === 'github-actions[bot]');
                 if (failed) {
                   let conflicts = [];
                   try { conflicts = JSON.parse(process.env.CONFLICT_FILES || '[]'); } catch {}
-                  const body = `${marker}\n自动同步未发布，维护分支 main 保持原样。\n\n`
-                    + `上游：${process.env.UPSTREAM_REF || '见日志'}\n\n`
-                    + `合并：${process.env.PREPARE_RESULT}；验证：${process.env.VALIDATE_RESULT}；发布：${process.env.PROMOTE_RESULT}\n\n`
-                    + (conflicts.length ? `冲突文件：\n\n${conflicts.map(path => '- ' + path).join('\n')}\n\n` : '')
-                    + `[查看日志和诊断补丁](${run})。不要使用 ours/theirs 或强推跳过冲突；修复并通过验证后再同步。`;
+                  const body = `${marker}\n`
+                    + `### 上游自动化同步中断告警\n\n`
+                    + `自动化同步流水线未能完成发布，当前维护分支 \`main\` 状态未受影响，保持原样。\n\n`
+                    + `- **上游目标**：${process.env.UPSTREAM_REF || '详见运行日志'}\n`
+                    + `- **各阶段状态**：\n`
+                    + `  - 准备阶段 (Prepare)：${process.env.PREPARE_RESULT}\n`
+                    + `  - 验证阶段 (Validate)：${process.env.VALIDATE_RESULT}\n`
+                    + `  - 发布阶段 (Promote)：${process.env.PROMOTE_RESULT}\n\n`
+                    + (conflicts.length ? `- **冲突文件列表**：\n\n${conflicts.map(path => '  - `' + path + '`').join('\n')}\n\n` : '')
+                    + `详情请查阅 [GitHub Actions 运行日志与诊断工件](${run})。\n\n`
+                    + `**处置建议**：请在本地拉取分支排查并解决冲突，严禁使用 \`ours/theirs\` 策略掩盖冲突或使用 force-push 覆盖分支；待本地验证通过后再行同步。`;
                   if (existing) {
-                    await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
+                    await github.rest.issues.update({ owner, repo, issue_number: existing.number, title, body });
                   } else {
                     await github.rest.issues.create({ owner, repo, title, body, assignees: [owner] });
                   }
                 } else if (existing) {
                   await github.rest.issues.createComment({ owner, repo, issue_number: existing.number,
-                    body: `同步/验证已恢复：[本次检查](${run})。` });
+                    body: `### 上游同步状态恢复\n\n自动化同步与完整性验证流水线已恢复正常通过：[运行记录](${run})。本通知 Issue 自动关闭。` });
                   await github.rest.issues.update({ owner, repo, issue_number: existing.number, state: 'closed' });
                 }
               }

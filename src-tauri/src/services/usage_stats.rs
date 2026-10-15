@@ -156,7 +156,7 @@ pub const SPEED_MIN_GENERATION_MS: i64 = 100;
 fn speed_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
     format!(
-        "{data_source} = 'proxy' AND {alias}.first_token_ms IS NOT NULL \
+        "{data_source} IN ('proxy', 'pi_observed', 'pi_observed_turn', 'antigravity_native') AND {alias}.first_token_ms IS NOT NULL \
          AND {alias}.output_tokens >= {SPEED_MIN_OUTPUT_TOKENS} \
          AND {alias}.latency_ms - {alias}.first_token_ms >= {SPEED_MIN_GENERATION_MS}"
     )
@@ -176,17 +176,17 @@ pub const SPEED_ESTIMATE_MIN_DURATION_MS: i64 = 1000;
 fn speed_estimate_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
     format!(
-        "{data_source} <> 'proxy' \
+        "{data_source} NOT IN ('proxy', 'pi_observed', 'pi_observed_turn', 'antigravity_native') \
          AND {alias}.output_tokens >= {SPEED_ESTIMATE_MIN_OUTPUT_TOKENS} \
          AND {alias}.latency_ms >= {SPEED_ESTIMATE_MIN_DURATION_MS}"
     )
 }
 
-/// 明细行能不能计首字时间的 SQL 条件：经路由服务、成功、有首字计时（流式请求）。
+/// 明细行能不能计首字时间：成功、有实测或原生报告的首字（不包括历史日志估算）。
 fn first_token_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
     format!(
-        "{data_source} = 'proxy' AND {alias}.first_token_ms IS NOT NULL \
+        "{data_source} IN ('proxy', 'pi_observed', 'pi_observed_turn', 'antigravity_native') AND {alias}.first_token_ms IS NOT NULL \
          AND {alias}.status_code >= 200 AND {alias}.status_code < 300"
     )
 }
@@ -196,7 +196,7 @@ fn first_token_eligible_sql(alias: &str) -> String {
 /// 组装请求的时间，系统性偏高。
 fn est_first_token_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
-    format!("{data_source} <> 'proxy' AND {alias}.first_token_ms IS NOT NULL")
+    format!("{data_source} NOT IN ('proxy', 'pi_observed', 'pi_observed_turn', 'antigravity_native') AND {alias}.first_token_ms IS NOT NULL")
 }
 
 /// 按分组键取首字时间的中位数（毫秒）。首字时间长尾明显，偶尔一次排队就是十几秒，

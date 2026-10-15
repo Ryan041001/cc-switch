@@ -1536,6 +1536,8 @@ pub fn run() {
             commands::get_pi_current_state,
             commands::update_pi_provider_usage_script,
             commands::get_pi_session_discovery,
+            commands::get_pi_observation_status,
+            commands::set_pi_observation_enabled,
             // Profile management (项目配置方案)
             commands::list_profiles,
             commands::create_profile,

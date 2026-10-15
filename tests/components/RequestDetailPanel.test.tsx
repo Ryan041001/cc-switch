@@ -111,6 +111,44 @@ describe("RequestDetailPanel", () => {
     expect(screen.queryByText("usage.sources.nativeCostUnknown")).toBeNull();
   });
 
+  it.each(["pi_observed", "pi_observed_turn"])(
+    "shows measured Pi timing without presenting it as an HTTP proxy: %s",
+    (dataSource) => {
+      renderWith(log({ appType: "pi", dataSource }));
+      expect(screen.getByText("usage.speedValue:65")).toBeInTheDocument();
+      expect(screen.getByText("usage.detail.firstToken")).toBeInTheDocument();
+      expect(screen.getByText("usage.detail.duration")).toBeInTheDocument();
+      expect(screen.queryByText("usage.detail.durationEstimated")).toBeNull();
+      expect(screen.queryByText("usage.detail.sourceProxy")).toBeNull();
+      expect(
+        screen.getByText(
+          dataSource === "pi_observed"
+            ? "usage.detail.sourcePiObserved"
+            : "usage.detail.sourcePiObservedTurn",
+        ),
+      ).toBeInTheDocument();
+    },
+  );
+
+  it("shows native Antigravity TTFT without inventing TPS for a buffered burst", () => {
+    renderWith(
+      log({
+        appType: "pi",
+        dataSource: "antigravity_native",
+        latencyMs: 6_002,
+        firstTokenMs: 6_000,
+        outputTokens: 1_200,
+      }),
+    );
+    expect(
+      screen.getByText("usage.detail.sourceAntigravityNative"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("usage.detail.firstToken")).toBeInTheDocument();
+    expect(screen.queryByText("usage.detail.firstTokenEstimated")).toBeNull();
+    expect(screen.queryByText(/usage.speedValue:/)).toBeNull();
+    expect(screen.queryByText(/usage.speedEstimatedValue:/)).toBeNull();
+  });
+
   it("explains why short outputs have no speed", () => {
     renderWith(
       log({ outputTokens: 64, latencyMs: 2_400, firstTokenMs: 1_900 }),

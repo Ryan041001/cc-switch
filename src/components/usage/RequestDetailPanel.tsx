@@ -26,6 +26,7 @@ import {
   formatOutputTokensPerSecond,
   getLocaleFromLanguage,
   getResolvedLang,
+  isSessionLogRequest,
   parseFiniteNumber,
 } from "./format";
 import { appDisplayName } from "./RequestLogTable";
@@ -95,6 +96,7 @@ function useDetailSections(request: RequestLog) {
   const unpriced = isUnpricedUsage(request);
   const multiplier = parseFiniteNumber(request.costMultiplier);
   const isProxy = !request.dataSource || request.dataSource === "proxy";
+  const isMeasured = !isSessionLogRequest(request);
   const tps = formatOutputTokensPerSecond(request);
   const estimatedTps = formatEstimatedTokensPerSecond(request);
   const latency = parseFiniteNumber(request.latencyMs);
@@ -144,9 +146,18 @@ function useDetailSections(request: RequestLog) {
     {
       key: "source",
       label: t("usage.detail.source"),
-      value: isProxy
-        ? t("usage.detail.sourceProxy", { code: request.statusCode })
-        : t("usage.detail.sourceSession"),
+      value:
+        request.dataSource === "antigravity_native"
+          ? t("usage.detail.sourceAntigravityNative")
+          : isProxy
+            ? t("usage.detail.sourceProxy", { code: request.statusCode })
+            : isMeasured
+              ? t(
+                  request.dataSource === "pi_observed_turn"
+                    ? "usage.detail.sourcePiObservedTurn"
+                    : "usage.detail.sourcePiObserved",
+                )
+              : t("usage.detail.sourceSession"),
       title: request.dataSource ?? "proxy",
     },
     {
@@ -226,7 +237,7 @@ function useDetailSections(request: RequestLog) {
   });
 
   let performance: DetailRow[];
-  if (!isProxy) {
+  if (!isMeasured) {
     // 会话日志的耗时和首字是导入时按日志时间戳估的（耗时 0 = 没估出来）
     if (latency == null || latency <= 0) {
       performance = [

@@ -99,6 +99,7 @@ struct PiUsageRecord {
 #[derive(Debug)]
 struct ParsedPiFile {
     records: Vec<PiUsageRecord>,
+    observations: Vec<PiObservation>,
     last_complete_line: i64,
     incomplete_tail: bool,
 }
@@ -241,9 +242,19 @@ fn sync_single_pi_file(
         }
     }
 
+    // Timing entries can arrive in a later append than the assistant message.
+    // Enrich that same durable request ID; never create another billable row.
+    let mut observations_updated = 0usize;
+    for observation in &parsed.observations {
+        observations_updated += apply_pi_observation(&tx, observation)?;
+    }
     update_pi_sync_state_on_conn(&tx, &file_path_string, revision, parsed.last_complete_line)?;
     tx.commit()
         .map_err(|error| AppError::Database(format!("提交 Pi 用量导入事务失败: {error}")))?;
+    drop(conn);
+    if observations_updated > 0 && result.imported == 0 {
+        crate::usage_events::notify_log_recorded();
+    }
     if parsed.incomplete_tail {
         result.deferred_files = 1;
     }
@@ -358,6 +369,7 @@ fn parse_pi_file(
     let mut session_id = None;
     let mut session_timestamp = None;
     let mut records = Vec::new();
+    let mut observations = Vec::new();
     let mut incomplete_tail = false;
 
     loop {
@@ -436,6 +448,9 @@ fn parse_pi_file(
             }
             continue;
         }
+        if let Some(observation) = parse_pi_observation(&value) {
+            observations.push(observation);
+        }
         if let Some(record) = parse_usage_record(
             &value,
             session_id.as_deref().unwrap_or_default(),
@@ -451,9 +466,82 @@ fn parse_pi_file(
     }
     Ok(ParsedPiFile {
         records,
+        observations,
         last_complete_line: line_number,
         incomplete_tail,
     })
+}
+
+#[derive(Debug)]
+struct PiObservation {
+    request_id: String,
+    latency_ms: i64,
+    first_token_ms: Option<i64>,
+    data_source: &'static str,
+}
+
+fn parse_pi_observation(entry: &Value) -> Option<PiObservation> {
+    if entry.get("type")?.as_str()? != "custom"
+        || entry.get("customType")?.as_str()? != "cc-switch.metrics.v1"
+    {
+        return None;
+    }
+    let data = entry.get("data")?;
+    if data.get("schemaVersion")?.as_u64()? != 1 {
+        return None;
+    }
+    let id = data.get("messageEntryId")?.as_str()?;
+    if !crate::session_manager::providers::pi::is_valid_tree_id(id) {
+        return None;
+    }
+    let timestamp = data.get("messageEntryTimestamp")?;
+    parse_timestamp_millis(timestamp)?;
+    let latency_ms = data.get("latencyMs")?.as_i64()?;
+    // Bound untrusted local metadata. Missing token events must stay NULL,
+    // not zero (a buffered/nonstreaming response has no measured TTFT).
+    if !(0..=7 * 24 * 60 * 60 * 1000).contains(&latency_ms) {
+        return None;
+    }
+    let first_token_ms = match data.get("firstTokenMs")? {
+        Value::Null => None,
+        value => Some(value.as_i64().filter(|ms| (0..=latency_ms).contains(ms))?),
+    };
+    let data_source = match data.get("timingBasis")?.as_str()? {
+        "provider_request" => "pi_observed",
+        "turn_start" => "pi_observed_turn",
+        _ => return None,
+    };
+    let identity_entry = serde_json::json!({ "id": id, "timestamp": timestamp });
+    Some(PiObservation {
+        request_id: pi_request_identity(&identity_entry, "assistant", &Value::Null, None)
+            .request_id,
+        latency_ms,
+        first_token_ms,
+        data_source,
+    })
+}
+
+fn apply_pi_observation(
+    conn: &rusqlite::Connection,
+    observation: &PiObservation,
+) -> Result<usize, AppError> {
+    conn.execute(
+        "UPDATE proxy_request_logs
+         SET latency_ms = ?1, first_token_ms = ?2, duration_ms = ?1,
+             is_streaming = ?3, data_source = ?4
+         WHERE request_id = ?5 AND app_type = 'pi'
+           AND data_source IN ('pi_session', 'pi_observed', 'pi_observed_turn')
+           AND (latency_ms IS NOT ?1 OR first_token_ms IS NOT ?2 OR duration_ms IS NOT ?1
+                OR is_streaming IS NOT ?3 OR data_source IS NOT ?4)",
+        rusqlite::params![
+            observation.latency_ms,
+            observation.first_token_ms,
+            i64::from(observation.first_token_ms.is_some()),
+            observation.data_source,
+            observation.request_id,
+        ],
+    )
+    .map_err(|error| AppError::Database(format!("补充 Pi 实测时序失败: {error}")))
 }
 
 fn parse_usage_record(
@@ -1751,6 +1839,171 @@ mod tests {
         )?;
         assert_eq!(count, 4);
         Ok(())
+    }
+
+    fn observation_entry(id: &str, timestamp: &str) -> Value {
+        serde_json::json!({
+            "type": "custom", "customType": "cc-switch.metrics.v1",
+            "data": {
+                "schemaVersion": 1, "messageEntryId": id,
+                "messageEntryTimestamp": timestamp,
+                "latencyMs": 10_000, "firstTokenMs": 2_000,
+                "timingBasis": "provider_request"
+            }
+        })
+    }
+
+    #[test]
+    fn late_observation_enriches_one_row_and_aggregates_measured_not_estimated(
+    ) -> Result<(), AppError> {
+        let temp = tempfile::tempdir().unwrap();
+        let path = session_path(temp.path(), "observed");
+        let timestamp = "2026-10-15T00:00:01Z";
+        let header = r#"{"type":"session","version":3,"id":"observed-session","timestamp":"2026-10-15T00:00:00Z"}"#;
+        let assistant =
+            assistant_line("abc12345", timestamp, 42).replace("\"output\":2", "\"output\":1200");
+        write_lines(&path, &[header, &assistant]);
+        let db = Database::memory()?;
+        assert_eq!(sync_pi_files(&db, std::slice::from_ref(&path)).imported, 1);
+
+        let observation = observation_entry("abc12345", timestamp).to_string();
+        crate::usage_events::take_test_notify_count();
+        writeln!(
+            fs::OpenOptions::new().append(true).open(&path).unwrap(),
+            "{observation}"
+        )
+        .unwrap();
+        let result = sync_pi_files(&db, std::slice::from_ref(&path));
+        assert!(result.errors.is_empty(), "{:?}", result.errors);
+        assert_eq!(result.imported, 0);
+        assert_eq!(crate::usage_events::take_test_notify_count(), 1);
+        {
+            let conn = lock_conn!(db.conn);
+            let row = conn.query_row(
+                "SELECT COUNT(*), input_tokens, output_tokens, latency_ms, first_token_ms,
+                        data_source, is_streaming FROM proxy_request_logs",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, i64>(1)?,
+                        r.get::<_, i64>(2)?,
+                        r.get::<_, i64>(3)?,
+                        r.get::<_, i64>(4)?,
+                        r.get::<_, String>(5)?,
+                        r.get::<_, i64>(6)?,
+                    ))
+                },
+            )?;
+            assert_eq!(row, (1, 42, 1200, 10_000, 2_000, "pi_observed".into(), 1));
+        }
+        let stats = db.get_model_stats(None, None, Some("pi"), None, None)?;
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].request_count, 1);
+        assert_eq!(stats[0].speed_output_tokens, 1200);
+        assert_eq!(stats[0].speed_generation_ms, 8_000);
+        assert_eq!(stats[0].first_token_median_ms, Some(2_000));
+        assert_eq!(stats[0].est_speed_output_tokens, 0);
+        assert_eq!(stats[0].est_first_token_median_ms, None);
+
+        // Rewrites and repeated scans keep the native ledger and bill only once.
+        write_lines(&path, &[header, &observation, &assistant]);
+        assert_eq!(sync_pi_files(&db, std::slice::from_ref(&path)).imported, 0);
+        assert_eq!(sync_pi_files(&db, std::slice::from_ref(&path)).imported, 0);
+        let stats = db.get_model_stats(None, None, Some("pi"), None, None)?;
+        assert_eq!(stats[0].request_count, 1);
+        assert_eq!(stats[0].speed_generation_ms, 8_000);
+        Ok(())
+    }
+
+    #[test]
+    fn observations_match_exact_entry_not_model_or_timestamp_and_never_resurrect_pruned_rows(
+    ) -> Result<(), AppError> {
+        let temp = tempfile::tempdir().unwrap();
+        let path = session_path(temp.path(), "exact-match");
+        let timestamp = "2026-10-15T00:00:01Z";
+        let header = r#"{"type":"session","version":3,"id":"exact-session","timestamp":"2026-10-15T00:00:00Z"}"#;
+        let first = assistant_line("first", timestamp, 1);
+        let second = assistant_line("second", timestamp, 2);
+        let observation = observation_entry("second", timestamp).to_string();
+        write_lines(&path, &[header, &first, &second, &observation]);
+        let db = Database::memory()?;
+        assert_eq!(sync_pi_files(&db, std::slice::from_ref(&path)).imported, 2);
+        {
+            let conn = lock_conn!(db.conn);
+            let observed_input: i64 = conn.query_row(
+                "SELECT input_tokens FROM proxy_request_logs WHERE data_source='pi_observed'",
+                [],
+                |r| r.get(0),
+            )?;
+            assert_eq!(observed_input, 2);
+            conn.execute("DELETE FROM proxy_request_logs", [])?;
+        }
+        write_lines(&path, &[header, &observation, &first, &second]);
+        assert_eq!(sync_pi_files(&db, std::slice::from_ref(&path)).imported, 0);
+        let count: i64 =
+            lock_conn!(db.conn)
+                .query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |r| r.get(0))?;
+        assert_eq!(count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn observed_buffered_response_keeps_null_ttft_and_turn_provenance() -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let timestamp = "2026-10-15T00:00:01Z";
+        let assistant: Value =
+            serde_json::from_str(&assistant_line("buffered", timestamp, 1)).unwrap();
+        let record = parse_usage_record(&assistant, "session", None, 0).unwrap();
+        let mut entry = observation_entry("buffered", timestamp);
+        entry["data"]["firstTokenMs"] = Value::Null;
+        entry["data"]["timingBasis"] = Value::from("turn_start");
+        let observation = parse_pi_observation(&entry).unwrap();
+        {
+            let conn = lock_conn!(db.conn);
+            insert_pi_record(&conn, &record)?;
+            assert_eq!(apply_pi_observation(&conn, &observation)?, 1);
+            assert_eq!(apply_pi_observation(&conn, &observation)?, 0);
+            let row = conn.query_row(
+                "SELECT first_token_ms, data_source, is_streaming FROM proxy_request_logs",
+                [],
+                |r| {
+                    Ok((
+                        r.get::<_, Option<i64>>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, i64>(2)?,
+                    ))
+                },
+            )?;
+            assert_eq!(row, (None, "pi_observed_turn".into(), 0));
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn observation_rejects_unknown_schemas_invalid_identity_and_unbounded_timing() {
+        let base = observation_entry("abc12345", "2026-10-15T00:00:01Z");
+        for (key, invalid) in [
+            ("schemaVersion", Value::from(2)),
+            ("messageEntryId", Value::from("../unsafe")),
+            ("messageEntryTimestamp", Value::from("invalid")),
+            ("latencyMs", Value::from(-1)),
+            ("latencyMs", Value::from(700_000_000)),
+            ("firstTokenMs", Value::from(10_001)),
+            ("firstTokenMs", Value::from(-1)),
+            ("firstTokenMs", serde_json::json!(1.5)),
+            ("timingBasis", Value::from("guessed")),
+        ] {
+            let mut entry = base.clone();
+            entry["data"][key] = invalid;
+            assert!(parse_pi_observation(&entry).is_none(), "{key}");
+        }
+        let mut wrong = base.clone();
+        wrong["customType"] = Value::from("other-extension");
+        assert!(parse_pi_observation(&wrong).is_none());
+        let mut zero = base;
+        zero["data"]["firstTokenMs"] = Value::from(0);
+        assert_eq!(parse_pi_observation(&zero).unwrap().first_token_ms, Some(0));
     }
 
     #[test]

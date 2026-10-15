@@ -41,6 +41,23 @@ describe("usage format helpers", () => {
     ).toBe(20);
   });
 
+  it.each(["pi_observed", "pi_observed_turn", "antigravity_native"])(
+    "uses measured Pi observations as exact client timings, not estimates: %s",
+    (dataSource) => {
+      const observed = {
+        dataSource,
+        outputTokens: 1200,
+        latencyMs: 10_000,
+        firstTokenMs: 2_000,
+      };
+      expect(getOutputTokensPerSecond(observed)).toBe(150);
+      expect(getEstimatedTokensPerSecond(observed)).toBeNull();
+      expect(
+        getOutputTokensPerSecond({ ...observed, firstTokenMs: undefined }),
+      ).toBeNull();
+    },
+  );
+
   it("ignores durationMs: speed is always output / (latency - first token)", () => {
     expect(
       getOutputTokensPerSecond({

@@ -1,3 +1,5 @@
+> **Ryan041001 fork:** based on v4.0.12; includes native Antigravity usage/timing and opt-in Pi live metrics (not a network proxy). See [fork notes, setup and build instructions](FORK-NOTES.md).
+
 <div align="center">
 
 # CC Switch

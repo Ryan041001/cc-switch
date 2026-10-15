@@ -23,7 +23,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
 const PROVIDER: &str = "antigravity-acp";
+// Keep this ledger namespace stable across upgrades: it is part of dedup identity.
 const SOURCE: &str = "pi_session";
+const ROW_SOURCE: &str = "antigravity_native";
 /// Session importers all bill under `pi`; Antigravity's outer turn is a Pi agent
 /// session, and `pi` keeps the fresh-input semantics our native counts use.
 const APP_TYPE: &str = "pi";
@@ -759,15 +761,17 @@ fn insert_record(connection: &Connection, record: &Record) -> SafeResult<()> {
          input_cost_usd,output_cost_usd,cache_read_cost_usd,cache_creation_cost_usd,total_cost_usd,\
          latency_ms,first_token_ms,duration_ms,status_code,error_message,session_id,provider_type,\
          is_streaming,cost_multiplier,created_at,data_source) VALUES \
-         (?1,?2,?3,?4,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?16,?18,?19,?20,?21,1,'1.0',?22,?23)",
+         (?1,?2,?3,?4,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,1,'1.0',?23,?24)",
         params![record.request_id, PROVIDER, APP_TYPE, record.model, pricing_model,
                 record.input, record.output, record.cache_read, record.cache_write,
                 INPUT_TOKEN_SEMANTICS_FRESH,
                 input_cost.to_string(), output_cost.to_string(), cache_read_cost.to_string(),
                 cache_write_cost.to_string(), total_cost.to_string(),
-                record.duration_ms, record.first_token_ms, if record.failed { 500 } else { 200 },
+                record.first_token_ms.saturating_add(record.duration_ms),
+                (record.first_token_ms > 0).then_some(record.first_token_ms), record.duration_ms,
+                if record.failed { 500 } else { 200 },
                 if record.failed { Some("Antigravity native generation failed") } else { None },
-                record.session, MARKER, record.created_at, SOURCE])
+                record.session, MARKER, record.created_at, ROW_SOURCE])
         .map_err(|_| "native token request insert failed")?;
     connection.execute("INSERT INTO session_usage_dedup (data_source,request_id,semantic_id,has_entry_id) VALUES (?1,?2,?3,1)",
         params![SOURCE,record.request_id,record.semantic_id]).map_err(|_| "native token dedup insert failed")?;
@@ -844,6 +848,43 @@ fn reprice_existing(connection: &Connection, records: &[Record]) -> SafeResult<u
     }
     Ok(updated)
 }
+// The legacy patch stored streaming_duration as the whole latency. It is the
+// post-first-output phase, separate from time_to_first_token. Repair only our
+// marked rows, without touching their token counts, pricing or durable ledger.
+fn timing_repair_ids(connection: &Connection, records: &[Record]) -> SafeResult<Vec<String>> {
+    let known: std::collections::HashSet<&str> =
+        records.iter().map(|r| r.request_id.as_str()).collect();
+    let mut statement = connection.prepare(
+        "SELECT request_id FROM proxy_request_logs WHERE provider_type=?1 AND COALESCE(data_source,'')<>?2"
+    ).map_err(|_| "native timing repair schema unavailable")?;
+    let ids = statement
+        .query_map(params![MARKER, ROW_SOURCE], |r| r.get::<_, String>(0))
+        .map_err(|_| "native timing repair query failed")?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "native timing repair row invalid")?;
+    Ok(ids
+        .into_iter()
+        .filter(|id| known.contains(id.as_str()))
+        .collect())
+}
+
+fn repair_existing_timings(connection: &Connection, records: &[Record]) -> SafeResult<u32> {
+    let ids = timing_repair_ids(connection, records)?;
+    let by_request: HashMap<&str, &Record> =
+        records.iter().map(|r| (r.request_id.as_str(), r)).collect();
+    for id in &ids {
+        let record = by_request[id.as_str()];
+        connection.execute(
+            "UPDATE proxy_request_logs SET latency_ms=?1, first_token_ms=?2, duration_ms=?3, data_source=?4
+             WHERE request_id=?5 AND provider_type=?6",
+            params![record.first_token_ms.saturating_add(record.duration_ms),
+                (record.first_token_ms > 0).then_some(record.first_token_ms), record.duration_ms,
+                ROW_SOURCE, id, MARKER],
+        ).map_err(|_| "native timing repair update failed")?;
+    }
+    Ok(ids.len().min(u32::MAX as usize) as u32)
+}
+
 fn import_records(
     db: &Database,
     records: &[Record],
@@ -857,7 +898,8 @@ fn import_records(
     validate_destination(&connection)?;
     let pending = classify(&connection, records)?;
     let repricable = repricable_ids(&connection, records)?;
-    if pending.is_empty() && repricable.is_empty() {
+    let timing_repairs = timing_repair_ids(&connection, records)?;
+    if pending.is_empty() && repricable.is_empty() && timing_repairs.is_empty() {
         log::info!(
             "Antigravity native sync: imported 0, skipped {}, files {files}",
             records.len()
@@ -878,6 +920,7 @@ fn import_records(
         insert_record(&transaction, record)?;
     }
     let repriced = reprice_existing(&transaction, records)?;
+    let timings_repaired = repair_existing_timings(&transaction, records)?;
     let imported = pending.len().min(u32::MAX as usize) as u32;
     transaction
         .commit()
@@ -888,8 +931,11 @@ fn import_records(
     if let Ok(mut cache) = db.log_count_cache.lock() {
         *cache = None;
     }
+    if imported == 0 && (repriced > 0 || timings_repaired > 0) {
+        crate::usage_events::notify_log_recorded();
+    }
     log::info!(
-        "Antigravity native sync: imported {imported}, repriced {repriced}, skipped {}, files {files}",
+        "Antigravity native sync: imported {imported}, repriced {repriced}, timings repaired {timings_repaired}, skipped {}, files {files}",
         records.len().saturating_sub(imported as usize)
     );
     Ok(SessionSyncResult {
@@ -978,6 +1024,81 @@ mod tests {
         assert_eq!(record.duration_ms, 2000);
         assert_eq!(record.first_token_ms, 100);
     }
+    #[test]
+    fn native_timing_uses_wait_plus_stream_and_does_not_invent_burst_tps() {
+        let db = database();
+        let directory = tempfile::tempdir().unwrap();
+        let mut r = record();
+        r.first_token_ms = 6000;
+        r.duration_ms = 2;
+        r.output = 1200;
+        import_records(&db, &[r], directory.path(), 1).unwrap();
+        let detail = db
+            .get_request_detail(&record().request_id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(detail.latency_ms, 6002);
+        assert_eq!(detail.first_token_ms, Some(6000));
+        assert_eq!(detail.duration_ms, Some(2));
+        assert_eq!(detail.data_source.as_deref(), Some(ROW_SOURCE));
+        let stats = db
+            .get_model_stats(None, None, Some("pi"), None, None)
+            .unwrap();
+        assert_eq!(stats[0].first_token_median_ms, Some(6000));
+        assert_eq!(stats[0].speed_output_tokens, 0);
+        assert_eq!(stats[0].est_speed_output_tokens, 0);
+    }
+
+    #[test]
+    fn native_long_streams_contribute_measured_speed_not_historical_estimates() {
+        let db = database();
+        let directory = tempfile::tempdir().unwrap();
+        let mut r = record();
+        r.first_token_ms = 6000;
+        r.duration_ms = 8000;
+        r.output = 1200;
+        import_records(&db, &[r], directory.path(), 1).unwrap();
+        let stats = db
+            .get_model_stats(None, None, Some("pi"), None, None)
+            .unwrap();
+        assert_eq!(stats[0].speed_output_tokens, 1200);
+        assert_eq!(stats[0].speed_generation_ms, 8000);
+        assert_eq!(stats[0].first_token_median_ms, Some(6000));
+        assert_eq!(stats[0].est_first_token_median_ms, None);
+    }
+
+    #[test]
+    fn legacy_native_timing_is_repaired_once_without_rebilling_or_repricing() {
+        let db = database();
+        let directory = tempfile::tempdir().unwrap();
+        let r = record();
+        import_records(&db, &[record()], directory.path(), 1).unwrap();
+        db.conn.lock().unwrap().execute(
+            "UPDATE proxy_request_logs SET data_source='pi_session', latency_ms=duration_ms, total_cost_usd='1.234'",
+            [],
+        ).unwrap();
+        assert_eq!(
+            import_records(&db, &[record()], directory.path(), 1)
+                .unwrap()
+                .imported,
+            0
+        );
+        let detail = db.get_request_detail(&r.request_id).unwrap().unwrap();
+        assert_eq!(detail.latency_ms, 2100);
+        assert_eq!(detail.data_source.as_deref(), Some(ROW_SOURCE));
+        assert_eq!(detail.total_cost_usd, "1.234");
+        let conn = db.conn.lock().unwrap();
+        let ledger_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM session_usage_dedup WHERE data_source='pi_session'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(ledger_count, 1);
+        assert!(timing_repair_ids(&conn, &[record()]).unwrap().is_empty());
+    }
+
     #[test]
     fn request_and_semantic_ids_are_frozen() {
         // These ids are already persisted in session_usage_dedup + the request

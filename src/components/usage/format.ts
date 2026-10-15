@@ -93,12 +93,17 @@ export const SPEED_ESTIMATE_MIN_OUTPUT_TOKENS = 200;
 /** 估算耗时短于此值时不估速度：输出 200 token 以上却不到 1 秒，多半是起点取晚了。 */
 export const SPEED_ESTIMATE_MIN_DURATION_MS = 1000;
 
-/** 这条请求是不是从会话日志导入的（不是路由服务记的）。 */
+/** 历史日志的时序是估算值；Pi 实时观测和路由记录均为实测。 */
 export function isSessionLogRequest(log: { dataSource?: unknown }): boolean {
   return (
     typeof log.dataSource === "string" &&
     log.dataSource !== "" &&
-    log.dataSource !== "proxy"
+    ![
+      "proxy",
+      "pi_observed",
+      "pi_observed_turn",
+      "antigravity_native",
+    ].includes(log.dataSource)
   );
 }
 

@@ -19,7 +19,21 @@ export type PiSessionDiscovery =
       reason: string;
     };
 
+export interface PiObservationStatus {
+  enabled: boolean;
+  canManage: boolean;
+  extensionPath: string;
+}
+
 export const piApi = {
+  async getObservationStatus(): Promise<PiObservationStatus> {
+    return await invoke("get_pi_observation_status");
+  },
+
+  async setObservationEnabled(enabled: boolean): Promise<PiObservationStatus> {
+    return await invoke("set_pi_observation_enabled", { enabled });
+  },
+
   async getCurrentState(): Promise<PiCurrentState> {
     return await invoke("get_pi_current_state");
   },

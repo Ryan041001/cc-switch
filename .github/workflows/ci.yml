@@ -4,7 +4,7 @@ on:
   pull_request:
     branches: [main]
   push:
-    branches: [main]
+    branches: [main, feat/pi-usage-observability]
   # 每周一次全量：push 到 main 也按路径过滤后，靠它在缓存被淘汰后重新建起来
   schedule:
     - cron: "41 19 * * 0" # 周一 03:41（北京时间）
@@ -41,6 +41,7 @@ jobs:
           filters: |
             frontend:
               - "src/**"
+              - "integrations/pi/**"
               - "tests/**"
               - "index.html"
               - "package.json"
@@ -56,6 +57,7 @@ jobs:
               - ".github/workflows/**"
             backend:
               - "src-tauri/**"
+              - "integrations/pi/**"
               - "rust-toolchain.toml"
               - ".github/workflows/**"
 

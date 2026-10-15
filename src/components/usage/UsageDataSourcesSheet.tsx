@@ -17,6 +17,7 @@ import { APP_DISPLAY_NAME } from "@/components/shell/AppGlyph";
 import { KNOWN_APP_TYPES } from "@/types/usage";
 import { cn } from "@/lib/utils";
 import { getResolvedLang, joinNames } from "./format";
+import { PiObservationControl } from "./PiObservationControl";
 
 interface UsageDataSourcesSheetProps {
   open: boolean;
@@ -150,6 +151,16 @@ export function UsageDataSourcesSheet({
                 {t("usage.sessionSync.syncNow")}
               </Button>
             </div>
+          </SourceCard>
+
+          <SourceCard
+            title={t("usage.sources.piMetricsTitle")}
+            help={{
+              title: t("usage.sources.piMetricsTitle"),
+              body: t("usage.sources.piMetricsHelp"),
+            }}
+          >
+            <PiObservationControl active={open} />
           </SourceCard>
 
           <SourceCard

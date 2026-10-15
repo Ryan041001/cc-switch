@@ -28,7 +28,7 @@ export interface RequestLog {
   totalCostUsd: string;
   isStreaming: boolean;
   latencyMs: number;
-  /** 路由服务记的是精确首字；会话日志导入的是按时间戳推出来的估算值（看 dataSource） */
+  /** proxy / pi_observed* 为客户端实测，antigravity_native 为原生报告；其他日志来源为估算。 */
   firstTokenMs?: number;
   durationMs?: number;
   statusCode: number;

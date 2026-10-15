@@ -31,6 +31,13 @@ const ROW_SOURCE: &str = "antigravity_native";
 const APP_TYPE: &str = "pi";
 const MARKER: &str = "antigravity_native_tokens_v1";
 const PREFIX: &str = "antigravity_native:";
+
+/// ACP clients buffer a whole reply and drain it almost instantly, so a
+/// sub-second `streaming_duration` beside hundreds of tokens is a transport
+/// burst, not a generation window. Only a sustained window is claimed as a
+/// stream, letting the shared streaming-speed rule judge TPS like every other
+/// measured source — with no per-provider threshold anywhere else.
+const NATIVE_MIN_STREAM_WINDOW_MS: i64 = 1_000;
 const MAX_BLOB: usize = 32 * 1024 * 1024;
 type SafeResult<T> = Result<T, &'static str>;
 
@@ -761,7 +768,7 @@ fn insert_record(connection: &Connection, record: &Record) -> SafeResult<()> {
          input_cost_usd,output_cost_usd,cache_read_cost_usd,cache_creation_cost_usd,total_cost_usd,\
          latency_ms,first_token_ms,duration_ms,status_code,error_message,session_id,provider_type,\
          is_streaming,cost_multiplier,created_at,data_source) VALUES \
-         (?1,?2,?3,?4,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,1,'1.0',?23,?24)",
+         (?1,?2,?3,?4,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?25,'1.0',?23,?24)",
         params![record.request_id, PROVIDER, APP_TYPE, record.model, pricing_model,
                 record.input, record.output, record.cache_read, record.cache_write,
                 INPUT_TOKEN_SEMANTICS_FRESH,
@@ -771,7 +778,8 @@ fn insert_record(connection: &Connection, record: &Record) -> SafeResult<()> {
                 (record.first_token_ms > 0).then_some(record.first_token_ms), record.duration_ms,
                 if record.failed { 500 } else { 200 },
                 if record.failed { Some("Antigravity native generation failed") } else { None },
-                record.session, MARKER, record.created_at, ROW_SOURCE])
+                record.session, MARKER, record.created_at, ROW_SOURCE,
+                i64::from(record.duration_ms >= NATIVE_MIN_STREAM_WINDOW_MS)])
         .map_err(|_| "native token request insert failed")?;
     connection.execute("INSERT INTO session_usage_dedup (data_source,request_id,semantic_id,has_entry_id) VALUES (?1,?2,?3,1)",
         params![SOURCE,record.request_id,record.semantic_id]).map_err(|_| "native token dedup insert failed")?;
@@ -1041,10 +1049,24 @@ mod tests {
         assert_eq!(detail.first_token_ms, Some(6000));
         assert_eq!(detail.duration_ms, Some(2));
         assert_eq!(detail.data_source.as_deref(), Some(ROW_SOURCE));
+        assert_eq!(detail.is_streaming, false);
+        // The screenshot-shaped case: a 428 ms "stream" beside 378 tokens passes
+        // the 100 ms gate but is still a buffered drain, so the importer must
+        // not claim a stream for it. TTFT stays for display either way.
+        let mut buffered = parse_record(&blob(10, true), "trajectory-burst", 1)
+            .unwrap()
+            .unwrap();
+        buffered.request_id = format!("{}burst", record().request_id);
+        buffered.semantic_id = format!("{}burst", record().semantic_id);
+        buffered.first_token_ms = 5115;
+        buffered.duration_ms = 428;
+        buffered.output = 378;
+        import_records(&db, &[buffered], directory.path(), 1).unwrap();
         let stats = db
             .get_model_stats(None, None, Some("pi"), None, None)
             .unwrap();
-        assert_eq!(stats[0].first_token_median_ms, Some(6000));
+        // Median of the two native TTFTs {6000, 5115}; speed stays suppressed.
+        assert_eq!(stats[0].first_token_median_ms, Some(5557));
         assert_eq!(stats[0].speed_output_tokens, 0);
         assert_eq!(stats[0].est_speed_output_tokens, 0);
     }

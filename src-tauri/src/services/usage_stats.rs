@@ -156,10 +156,14 @@ const MEASURED_SOURCES_SQL: &str =
 
 /// 明细行能不能计速度的 SQL 条件（和前端 `isSpeedEligible` 同口径）。会话日志导入的行
 /// 也可能有首字（按时间戳推出来的），所以先按来源分开，不能只看有没有首字。
+/// 速度是流式指标：只对流式响应计算。所有实测来源共用这一条规则——数据源侧
+/// （如 Antigravity 原生导入器）以 `is_streaming` 如实声明"是否存在可持续流式窗口"，
+/// 统计层不按供应商单独调参。
 fn speed_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
     format!(
-        "{data_source} IN {MEASURED_SOURCES_SQL} AND {alias}.first_token_ms IS NOT NULL \
+        "{data_source} IN {MEASURED_SOURCES_SQL} AND {alias}.is_streaming = 1 \
+         AND {alias}.first_token_ms IS NOT NULL \
          AND {alias}.output_tokens >= {SPEED_MIN_OUTPUT_TOKENS} \
          AND {alias}.latency_ms - {alias}.first_token_ms >= {SPEED_MIN_GENERATION_MS}"
     )
@@ -5043,11 +5047,12 @@ mod tests {
                     "INSERT INTO proxy_request_logs (
                         request_id, provider_id, app_type, model,
                         input_tokens, output_tokens, total_cost_usd,
-                        latency_ms, first_token_ms, status_code, created_at, data_source
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        latency_ms, first_token_ms, status_code, created_at, data_source, is_streaming
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params![
                         id, "p1", "claude", model, 10, output, "0", latency, first, status, 1000,
-                        source
+                        source,
+                        i64::from(first.is_some())
                     ],
                 )
             };
@@ -5092,8 +5097,8 @@ mod tests {
                     "INSERT INTO proxy_request_logs (
                         request_id, provider_id, app_type, model,
                         input_tokens, output_tokens, total_cost_usd,
-                        latency_ms, first_token_ms, status_code, created_at, data_source
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        latency_ms, first_token_ms, status_code, created_at, data_source, is_streaming
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                     params![
                         id,
                         provider,
@@ -5107,7 +5112,8 @@ mod tests {
                         first,
                         status,
                         1000,
-                        source
+                        source,
+                        i64::from(source == "proxy" && first.is_some())
                     ],
                 )
             };
@@ -5294,8 +5300,8 @@ mod tests {
                     "INSERT INTO proxy_request_logs (
                         request_id, provider_id, app_type, model,
                         input_tokens, output_tokens, total_cost_usd,
-                        latency_ms, first_token_ms, status_code, created_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        latency_ms, first_token_ms, status_code, created_at, is_streaming
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)",
                     params![id, "p1", "claude", "m", 10, output, "0", latency, first, 200, 1000],
                 )
             };

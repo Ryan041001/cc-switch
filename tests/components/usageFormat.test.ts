@@ -64,6 +64,21 @@ describe("usage format helpers", () => {
     },
   );
 
+  it("withholds speed for non-streaming rows under the shared rule, keeping TTFT", () => {
+    const buffered = {
+      dataSource: "antigravity_native",
+      outputTokens: 378,
+      latencyMs: 5543,
+      firstTokenMs: 5115,
+      isStreaming: false,
+    };
+    expect(getOutputTokensPerSecond(buffered)).toBeNull();
+    expect(getSpeedUnavailableReason(buffered)).toBe("usage.detail.speedBurst");
+    const sustained = { ...buffered, latencyMs: 13115, isStreaming: true };
+    // 378 tokens over the 8000 ms sustained window.
+    expect(getOutputTokensPerSecond(sustained)).toBeCloseTo(47.25);
+  });
+
   it("explains why measured and historical rows intentionally withhold speed", () => {
     const measured = {
       dataSource: "pi_observed_call",

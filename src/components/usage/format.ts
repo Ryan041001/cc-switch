@@ -39,6 +39,7 @@ interface OutputTokensPerSecondInput {
   latencyMs: unknown;
   firstTokenMs?: unknown;
   dataSource?: unknown;
+  isStreaming?: unknown;
 }
 
 /**
@@ -59,10 +60,13 @@ export function getGenerationMs(
 
 // 生成窗口短于此值时不算速度：中转站缓冲后一次性吐出、或短回复整段落在
 // 同一个网络包里，窗口只剩几毫秒，算出来的是传输突发而不是生成速度。
+// 非流式行（如 Antigravity 原生突发回传）也一律不计速度。
 export const SPEED_MIN_GENERATION_MS = 100;
 
-/** 这条请求能不能算速度：输出不少于 100 token，且生成时间不短于 100 毫秒。 */
+/** 这条请求能不能算速度：流式响应、输出不少于 100 token，且生成时间不短于 100 毫秒。
+ *  与后端 `speed_eligible_sql` 同口径；`isStreaming` 缺省视为流式（兼容旧数据）。 */
 export function isSpeedEligible(log: OutputTokensPerSecondInput): boolean {
+  if (log.isStreaming === false) return false;
   const outputTokens = parseFiniteNumber(log.outputTokens);
   const generationMs = getGenerationMs(log);
   return (

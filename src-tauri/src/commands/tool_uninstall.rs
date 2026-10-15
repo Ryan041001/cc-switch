@@ -870,9 +870,7 @@ mod tests {
     #[test]
     fn windows_npm_path_fallback_uses_batch_compatible_path() {
         use std::os::windows::process::CommandExt;
-        use std::time::Duration;
 
-        const TEST_PROBE_TIMEOUT: Duration = Duration::from_secs(30);
         const FIXTURE_ROOT: &str = "CC_SWITCH_TEST_NPM_UNINSTALL_ROOT";
         if let Some(root) = std::env::var_os(FIXTURE_ROOT) {
             let root = PathBuf::from(root);
@@ -883,12 +881,16 @@ mod tests {
             let inst = installation(&entry);
             assert!(manager_next_to(&inst.path, "npm").is_none());
 
-            let resolved = resolve_path_default(
-                "npm",
-                CommandDeadline::from_timeout(Some(TEST_PROBE_TIMEOUT)),
-            )
-            .unwrap()
-            .expect("npm should resolve from the separate PATH directory");
+            // No probe deadline: `where.exe` keeps walking every merged PATH
+            // entry (including the App Execution Alias directories served by
+            // AppXSvc) after the first match, so a busy runner can need far
+            // more than any fixed probe budget for a perfectly correct result.
+            // Raising the budget only moved the flake (10s -> 30s in #8295),
+            // so keep the assertion timing-free here; nextest's own
+            // slow-timeout still terminates a genuine hang.
+            let resolved = resolve_path_default("npm", None)
+                .unwrap()
+                .expect("npm should resolve from the separate PATH directory");
             assert_eq!(resolved, std::fs::canonicalize(&npm).unwrap());
             assert!(resolved.to_string_lossy().starts_with(r"\\?\"));
 

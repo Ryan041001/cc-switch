@@ -20,6 +20,13 @@ describe("getUsageProviderLabel", () => {
     );
   });
 
+  it("labels the Antigravity raw provider ID without changing its identity", () => {
+    expect(getUsageProviderLabel("antigravity-acp", t)).toEqual({
+      label: "Antigravity (ACP)",
+      shortLabel: "Antigravity",
+    });
+  });
+
   it("keeps real provider names as-is", () => {
     expect(getUsageProviderLabel("DeepSeek", t)).toEqual({
       label: "DeepSeek",

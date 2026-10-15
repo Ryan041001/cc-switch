@@ -2417,6 +2417,7 @@
       "scanHelp": "The conversation records each app writes on this computer. CC Switch reads usage from them, so you get data even without routing.",
       "coverage": "Covers 7 apps: {{apps}}",
       "cadenceOn": "Scans once at startup, then every 60 seconds",
+      "antigravity": "Also syncs native Antigravity model tokens under Pi. Output includes thinking; cost is computed locally from your model pricing table.",
       "cadenceOff": "Auto scan is off; logs are scanned only when you click Sync Now",
       "unsupported": "Hermes and OpenClaw don't support usage stats yet",
       "loggingHelpTitle": "What does recording request usage do?",

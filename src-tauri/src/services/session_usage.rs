@@ -164,6 +164,11 @@ pub fn sync_all_unlocked(db: &Database) -> SessionSyncResult {
     );
     merge_sync_step(
         &mut result,
+        "Antigravity",
+        crate::services::session_usage_antigravity::sync_antigravity_usage(db),
+    );
+    merge_sync_step(
+        &mut result,
         "MCode",
         crate::services::session_usage_mcode::sync_mcode_usage(db),
     );

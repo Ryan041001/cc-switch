@@ -2417,6 +2417,7 @@
       "scanHelp": "各アプリがこのコンピューターに書き込む会話記録です。CC Switch はここから使用量を読み取るので、ルーティングなしでもデータがあります。",
       "coverage": "対象の 7 アプリ：{{apps}}",
       "cadenceOn": "起動時に 1 回、その後は 60 秒ごとにスキャン",
+      "antigravity": "Antigravity の実測モデル token も Pi に同期します。出力に思考を含み、コストはローカルのモデル価格表から計算します。",
       "cadenceOff": "自動スキャンはオフです。「今すぐ同期」を押したときだけスキャンします",
       "unsupported": "Hermes と OpenClaw は使用量統計にまだ対応していません",
       "loggingHelpTitle": "リクエストの使用量の記録とは",

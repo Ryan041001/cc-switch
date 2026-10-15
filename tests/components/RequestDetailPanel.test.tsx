@@ -60,6 +60,57 @@ describe("RequestDetailPanel", () => {
     expect(screen.getByText("$0.0670")).toBeInTheDocument();
   });
 
+  it("prices native Antigravity rows from the local table like other providers", () => {
+    renderWith(
+      log({
+        requestId: "antigravity_native:test",
+        providerId: "antigravity-acp",
+        providerName: "antigravity-acp",
+        appType: "pi",
+        dataSource: "pi_session",
+        model: "gemini-3.8-flash-n",
+        inputTokens: 100,
+        outputTokens: 1800,
+        cacheReadTokens: 300,
+        inputCostUsd: "0.0001",
+        outputCostUsd: "0.0068",
+        cacheReadCostUsd: "0.0001",
+        cacheCreationCostUsd: "0",
+        totalCostUsd: "0.0070",
+      }),
+    );
+    // Cost is computed locally like every other session importer, so a priced
+    // row shows real dollars rather than a permanent 「未报告」.
+    expect(screen.getByText("$0.0070")).toBeInTheDocument();
+    expect(screen.queryByText("usage.sources.nativeCostUnknown")).toBeNull();
+    expect(screen.getByText("Antigravity")).toBeInTheDocument();
+  });
+
+  it("shows unpriced for native Antigravity rows whose model has no price yet", () => {
+    renderWith(
+      log({
+        requestId: "antigravity_native:test",
+        providerId: "antigravity-acp",
+        providerName: "antigravity-acp",
+        appType: "pi",
+        dataSource: "pi_session",
+        model: "gemini-unknown-model",
+        inputTokens: 100,
+        outputTokens: 1800,
+        cacheReadTokens: 300,
+        inputCostUsd: "0",
+        outputCostUsd: "0",
+        cacheReadCostUsd: "0",
+        cacheCreationCostUsd: "0",
+        totalCostUsd: "0",
+      }),
+    );
+    // Same fallback as Pi/Claude/Codex: no pricing row means 「未计价」, which
+    // becomes real cost once the user adds a price (auto back-fill).
+    expect(screen.getByText("usage.unpriced")).toBeInTheDocument();
+    expect(screen.queryByText("usage.sources.nativeCostUnknown")).toBeNull();
+  });
+
   it("explains why short outputs have no speed", () => {
     renderWith(
       log({ outputTokens: 64, latencyMs: 2_400, firstTokenMs: 1_900 }),

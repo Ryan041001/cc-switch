@@ -34,6 +34,9 @@ export function getUsageProviderLabel(
     const label = t("usage.unknownProvider");
     return { label, shortLabel: label };
   }
+  if (name === "antigravity-acp") {
+    return { label: "Antigravity (ACP)", shortLabel: "Antigravity" };
+  }
   const app = SESSION_PROVIDER_APPS[name];
   if (!app) return { label: name, shortLabel: name };
   return {

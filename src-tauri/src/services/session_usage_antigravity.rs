@@ -32,12 +32,6 @@ const APP_TYPE: &str = "pi";
 const MARKER: &str = "antigravity_native_tokens_v1";
 const PREFIX: &str = "antigravity_native:";
 
-/// ACP clients buffer a whole reply and drain it almost instantly, so a
-/// sub-second `streaming_duration` beside hundreds of tokens is a transport
-/// burst, not a generation window. Only a sustained window is claimed as a
-/// stream, letting the shared streaming-speed rule judge TPS like every other
-/// measured source — with no per-provider threshold anywhere else.
-const NATIVE_MIN_STREAM_WINDOW_MS: i64 = 1_000;
 const MAX_BLOB: usize = 32 * 1024 * 1024;
 type SafeResult<T> = Result<T, &'static str>;
 
@@ -831,7 +825,7 @@ fn insert_record(connection: &Connection, record: &Record) -> SafeResult<()> {
                 if record.error.is_some() { 500 } else { 200 },
                 record.error.clone(),
                 record.session, MARKER, record.created_at, ROW_SOURCE,
-                i64::from(record.duration_ms >= NATIVE_MIN_STREAM_WINDOW_MS)])
+                i64::from(record.duration_ms > 0)])
         .map_err(|_| "native token request insert failed")?;
     connection.execute("INSERT INTO session_usage_dedup (data_source,request_id,semantic_id,has_entry_id) VALUES (?1,?2,?3,1)",
         params![SOURCE,record.request_id,record.semantic_id]).map_err(|_| "native token dedup insert failed")?;
@@ -908,22 +902,19 @@ fn reprice_existing(connection: &Connection, records: &[Record]) -> SafeResult<u
     }
     Ok(updated)
 }
-// Two legacy shapes poison the shared speed rule and must be re-derived:
-// the old patch stored streaming_duration as the whole latency (it is the
-// post-first-output phase, separate from time_to_first_token), and builds
-// before the sustained-window gate marked every native row streaming, so a
-// buffered drain still divided the whole output by a few milliseconds.
-// Repair our marked rows whose stored timing or streaming flag disagrees with
-// the current semantics, without touching token counts, pricing or the ledger.
+// Restore total timing for early rows and undo the old provider-specific
+// one-second streaming cutoff. A native stream window is recorded as-is; the
+// shared speed rules decide eligibility, just as for every measured channel.
+// Only our marked rows are repaired; tokens, pricing and the ledger stay intact.
 fn timing_repair_ids(connection: &Connection, records: &[Record]) -> SafeResult<Vec<String>> {
     let known: std::collections::HashSet<&str> =
         records.iter().map(|r| r.request_id.as_str()).collect();
     let mut statement = connection
-        .prepare(&format!(
+        .prepare(
             "SELECT request_id FROM proxy_request_logs WHERE provider_type=?1 \
              AND (COALESCE(data_source,'')<>?2 \
-                  OR COALESCE(is_streaming,-1)<>(duration_ms>={NATIVE_MIN_STREAM_WINDOW_MS}))"
-        ))
+                  OR COALESCE(is_streaming,-1)<>(duration_ms>0))",
+        )
         .map_err(|_| "native timing repair schema unavailable")?;
     let ids = statement
         .query_map(params![MARKER, ROW_SOURCE], |r| r.get::<_, String>(0))
@@ -952,7 +943,7 @@ fn repair_existing_timings(connection: &Connection, records: &[Record]) -> SafeR
                     (record.first_token_ms > 0).then_some(record.first_token_ms),
                     record.duration_ms,
                     ROW_SOURCE,
-                    i64::from(record.duration_ms >= NATIVE_MIN_STREAM_WINDOW_MS),
+                    i64::from(record.duration_ms > 0),
                     id,
                     MARKER
                 ],
@@ -1118,41 +1109,33 @@ mod tests {
         assert_eq!(record.first_token_ms, 100);
     }
     #[test]
-    fn native_timing_uses_wait_plus_stream_and_does_not_invent_burst_tps() {
+    fn native_timing_uses_shared_speed_gates_without_one_second_override() {
         let db = database();
         let directory = tempfile::tempdir().unwrap();
-        let mut r = record();
-        r.first_token_ms = 6000;
-        r.duration_ms = 2;
-        r.output = 1200;
-        import_records(&db, &[r], directory.path(), 1).unwrap();
-        let detail = db
-            .get_request_detail(&record().request_id)
-            .unwrap()
-            .unwrap();
-        assert_eq!(detail.latency_ms, 6002);
-        assert_eq!(detail.first_token_ms, Some(6000));
-        assert_eq!(detail.duration_ms, Some(2));
-        assert_eq!(detail.data_source.as_deref(), Some(ROW_SOURCE));
-        assert_eq!(detail.is_streaming, false);
-        // The screenshot-shaped case: a 428 ms "stream" beside 378 tokens passes
-        // the 100 ms gate but is still a buffered drain, so the importer must
-        // not claim a stream for it. TTFT stays for display either way.
-        let mut buffered = parse_record(&blob(10, true), "trajectory-burst", 1)
-            .unwrap()
-            .unwrap();
-        buffered.request_id = format!("{}burst", record().request_id);
-        buffered.semantic_id = format!("{}burst", record().semantic_id);
-        buffered.first_token_ms = 5115;
-        buffered.duration_ms = 428;
-        buffered.output = 378;
-        import_records(&db, &[buffered], directory.path(), 1).unwrap();
+        for window in [0, 2, 99, 100, 428, 999, 1000, 8000] {
+            let mut r = record();
+            r.request_id = format!("{}:{window}", r.request_id);
+            r.semantic_id = format!("{}:{window}", r.semantic_id);
+            r.first_token_ms = 6000;
+            r.duration_ms = window;
+            r.output = 378;
+            let id = r.request_id.clone();
+            import_records(&db, &[r], directory.path(), 1).unwrap();
+            let detail = db.get_request_detail(&id).unwrap().unwrap();
+            assert_eq!(detail.latency_ms, 6000 + window as u64);
+            assert_eq!(detail.first_token_ms, Some(6000));
+            assert_eq!(detail.duration_ms, Some(window as u64));
+            assert_eq!(detail.data_source.as_deref(), Some(ROW_SOURCE));
+            assert_eq!(detail.is_streaming, window > 0);
+        }
         let stats = db
             .get_model_stats(None, None, Some("pi"), None, None)
             .unwrap();
-        // Median of the two native TTFTs {6000, 5115}; speed stays suppressed.
-        assert_eq!(stats[0].first_token_median_ms, Some(5557));
-        assert_eq!(stats[0].speed_output_tokens, 0);
+        // The shared 100 ms gate excludes 0/2/99 ms, but admits 100/428/999 ms
+        // exactly like other channels; there is no native-only one-second gate.
+        assert_eq!(stats[0].speed_output_tokens, 378 * 5);
+        assert_eq!(stats[0].speed_generation_ms, 100 + 428 + 999 + 1000 + 8000);
+        assert_eq!(stats[0].first_token_median_ms, Some(6000));
         assert_eq!(stats[0].est_speed_output_tokens, 0);
     }
 
@@ -1214,12 +1197,10 @@ mod tests {
     }
 
     #[test]
-    fn pre_gate_streaming_flags_are_repaired_in_place() {
-        // Builds before the sustained-window gate marked every native row
-        // streaming, so a sub-second buffered drain still passed the shared
-        // speed rule and displayed thousands of tok/s. Repair must re-derive
-        // the flag from the native window and leave tokens, pricing and the
-        // durable ledger alone.
+    fn provider_specific_streaming_cutoff_is_removed_from_existing_rows() {
+        // Undo flags written by the native-only one-second cutoff without
+        // changing usage, prices or dedup identities. The shared speed rule
+        // must include eligible sub-second windows after the next sync.
         let db = database();
         let directory = tempfile::tempdir().unwrap();
         db.conn.lock().unwrap().execute("INSERT OR REPLACE INTO model_pricing (model_id,display_name,input_cost_per_million,output_cost_per_million,cache_read_cost_per_million,cache_creation_cost_per_million) VALUES ('gemini-test-high','test','10','20','5','0')",[]).unwrap();
@@ -1245,11 +1226,14 @@ mod tests {
             .total_cost_usd;
         {
             let connection = db.conn.lock().unwrap();
-            // Simulate the pre-gate importer: every native row was streaming.
+            // Simulate the old provider-specific cutoff on an existing row.
             connection
-                .execute("UPDATE proxy_request_logs SET is_streaming=1", [])
+                .execute(
+                    "UPDATE proxy_request_logs SET is_streaming=0 WHERE duration_ms<1000",
+                    [],
+                )
                 .unwrap();
-            // The poisoned state: both windows feed the aggregate speed.
+            // Before repair only the long window feeds the aggregate speed.
             let (speed_tokens, speed_window): (i64, i64) = connection
                 .query_row(
                     "SELECT SUM(output_tokens),SUM(latency_ms-first_token_ms) FROM proxy_request_logs \
@@ -1258,7 +1242,7 @@ mod tests {
                     |r| Ok((r.get(0)?, r.get(1)?)),
                 )
                 .unwrap();
-            assert_eq!((speed_tokens, speed_window), (3200, 8500));
+            assert_eq!((speed_tokens, speed_window), (2000, 8000));
         }
         assert_eq!(
             import_records(
@@ -1272,9 +1256,9 @@ mod tests {
             0
         );
         let burst_detail = db.get_request_detail(&burst.request_id).unwrap().unwrap();
-        // 500 ms is a buffered drain, not a stream: excluded from speed.
-        assert!(!burst_detail.is_streaming);
-        assert_eq!(burst_detail.latency_ms, 600); // first token 100 ms + a 500 ms drain
+        // The 500 ms window now follows the shared rule, with TTFT unchanged.
+        assert!(burst_detail.is_streaming);
+        assert_eq!(burst_detail.latency_ms, 600); // first token 100 ms + a 500 ms window
         assert_eq!(burst_detail.first_token_ms, Some(100));
         assert_eq!(burst_detail.duration_ms, Some(500));
         let sustained_detail = db
@@ -1285,9 +1269,9 @@ mod tests {
         let stats = db
             .get_model_stats(None, None, Some("pi"), None, None)
             .unwrap();
-        // Only the sustained window feeds the aggregate speed now.
-        assert_eq!(stats[0].speed_output_tokens, 2000);
-        assert_eq!(stats[0].speed_generation_ms, 8000);
+        // Both windows now feed the same aggregate speed as other channels.
+        assert_eq!(stats[0].speed_output_tokens, 3200);
+        assert_eq!(stats[0].speed_generation_ms, 8500);
         // Costs and the dedup ledger stay untouched by the timing repair.
         assert_eq!(burst_detail.total_cost_usd, cost_before);
         let connection = db.conn.lock().unwrap();

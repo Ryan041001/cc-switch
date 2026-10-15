@@ -79,6 +79,33 @@ describe("usage format helpers", () => {
     expect(getOutputTokensPerSecond(sustained)).toBeCloseTo(47.25);
   });
 
+  it.each(["proxy", "pi_observed_call", "antigravity_native"])(
+    "uses the same speed thresholds for %s without an end-to-end fallback",
+    (dataSource) => {
+      for (const window of [0, 2, 99, 100, 428, 999, 1000, 8000]) {
+        const request = {
+          dataSource,
+          outputTokens: 378,
+          latencyMs: 6000 + window,
+          firstTokenMs: 6000,
+          isStreaming: window > 0,
+        };
+        if (window < 100) {
+          expect(getOutputTokensPerSecond(request)).toBeNull();
+          expect(getSpeedUnavailableReason(request)).toBe(
+            "usage.detail.speedBurst",
+          );
+        } else {
+          expect(getOutputTokensPerSecond(request)).toBeCloseTo(
+            378_000 / window,
+          );
+          expect(getSpeedUnavailableReason(request)).toBeNull();
+        }
+        expect(getEstimatedTokensPerSecond(request)).toBeNull();
+      }
+    },
+  );
+
   it("explains why measured and historical rows intentionally withhold speed", () => {
     const measured = {
       dataSource: "pi_observed_call",

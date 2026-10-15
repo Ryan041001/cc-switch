@@ -156,9 +156,8 @@ const MEASURED_SOURCES_SQL: &str =
 
 /// 明细行能不能计速度的 SQL 条件（和前端 `isSpeedEligible` 同口径）。会话日志导入的行
 /// 也可能有首字（按时间戳推出来的），所以先按来源分开，不能只看有没有首字。
-/// 速度是流式指标：只对流式响应计算。所有实测来源共用这一条规则——数据源侧
-/// （如 Antigravity 原生导入器）以 `is_streaming` 如实声明"是否存在可持续流式窗口"，
-/// 统计层不按供应商单独调参。
+/// 速度是流式指标：只对流式响应计算。数据源侧记录 `is_streaming`，所有实测来源
+/// 共用上述输出与生成时间门槛，统计层不按供应商单独调参。
 fn speed_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
     format!(

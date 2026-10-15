@@ -51,6 +51,7 @@ import { ModelStatsTable } from "./ModelStatsTable";
 import { PricingConfigPanel } from "./PricingConfigPanel";
 import { RequestDetailPanel } from "./RequestDetailPanel";
 import { UsageDataSourcesSheet } from "./UsageDataSourcesSheet";
+import { PiObservationPanel } from "./PiObservationPanel";
 import { UsageDateRangePicker } from "./UsageDateRangePicker";
 import { UsageHeatmap } from "./UsageHeatmap";
 import { fmtInt, formatRelativeTime, getLocaleFromLanguage } from "./format";
@@ -835,6 +836,11 @@ export function UsageDashboard({
         actions={headerActions}
       />
       {filterRow}
+      {appType === "pi" && (
+        <div className="px-6 pb-3">
+          <PiObservationPanel />
+        </div>
+      )}
       {body}
 
       <RequestDetailPanel

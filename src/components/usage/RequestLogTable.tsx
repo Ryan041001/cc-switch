@@ -22,6 +22,7 @@ import {
   formatTokensCompact,
   getLocaleFromLanguage,
   isSessionLogRequest,
+  getSpeedUnavailableReason,
   parseFiniteNumber,
 } from "./format";
 import { usageTable } from "./usageTable";
@@ -308,7 +309,7 @@ export function RequestLogTable({
         </td>
         <td
           className={cn(usageTable.td, tps == null && usageTable.muted)}
-          title={timingTip}
+          title={tps == null ? t(getSpeedUnavailableReason(log)!) : timingTip}
         >
           {tps == null ? (
             "—"
@@ -327,7 +328,15 @@ export function RequestLogTable({
             usageTable.td,
             firstTokenText == null && usageTable.muted,
           )}
-          title={timingTip}
+          title={
+            firstTokenText == null
+              ? t(
+                  isSession
+                    ? "usage.detail.noFirstTokenSession"
+                    : "usage.detail.noStreamingTiming",
+                )
+              : timingTip
+          }
         >
           {isSession && firstTokenText != null && "≈"}
           {firstTokenText ?? "—"}

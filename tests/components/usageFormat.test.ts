@@ -11,6 +11,7 @@ import {
   getAggregateTokensPerSecond,
   getEstimatedTokensPerSecond,
   getOutputTokensPerSecond,
+  getSpeedUnavailableReason,
   getLocaleFromLanguage,
   sumSpeedTotals,
 } from "@/components/usage/format";
@@ -41,7 +42,12 @@ describe("usage format helpers", () => {
     ).toBe(20);
   });
 
-  it.each(["pi_observed", "pi_observed_turn", "antigravity_native"])(
+  it.each([
+    "pi_observed",
+    "pi_observed_call",
+    "pi_observed_turn",
+    "antigravity_native",
+  ])(
     "uses measured Pi observations as exact client timings, not estimates: %s",
     (dataSource) => {
       const observed = {
@@ -57,6 +63,36 @@ describe("usage format helpers", () => {
       ).toBeNull();
     },
   );
+
+  it("explains why measured and historical rows intentionally withhold speed", () => {
+    const measured = {
+      dataSource: "pi_observed_call",
+      outputTokens: 1200,
+      latencyMs: 10_000,
+      firstTokenMs: 2_000,
+    };
+    expect(getSpeedUnavailableReason(measured)).toBeNull();
+    expect(getSpeedUnavailableReason({ ...measured, firstTokenMs: null })).toBe(
+      "usage.detail.noFirstToken",
+    );
+    expect(getSpeedUnavailableReason({ ...measured, outputTokens: 48 })).toBe(
+      "usage.detail.speedTooFew",
+    );
+    expect(
+      getSpeedUnavailableReason({ ...measured, firstTokenMs: 9_990 }),
+    ).toBe("usage.detail.speedBurst");
+    const historical = { ...measured, dataSource: "pi_session" };
+    expect(getSpeedUnavailableReason(historical)).toBeNull();
+    expect(getSpeedUnavailableReason({ ...historical, latencyMs: 0 })).toBe(
+      "usage.detail.noTimingSession",
+    );
+    expect(getSpeedUnavailableReason({ ...historical, outputTokens: 48 })).toBe(
+      "usage.detail.speedEstimateTooFew",
+    );
+    expect(getSpeedUnavailableReason({ ...historical, latencyMs: 999 })).toBe(
+      "usage.detail.speedEstimateTooShort",
+    );
+  });
 
   it("ignores durationMs: speed is always output / (latency - first token)", () => {
     expect(

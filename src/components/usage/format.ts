@@ -43,8 +43,8 @@ interface OutputTokensPerSecondInput {
 
 /**
  * 一条请求的生成时间（毫秒）= 耗时 − 首字。缺耗时或首字、或差值不大于 0 时返回 null。
- * 只算路由服务记的请求：会话日志的耗时和首字都是按时间戳估的，不算精确速度
- * （会话日志另有估算，见 [getEstimatedTokensPerSecond]）；非流式请求没有首字。
+ * 只算代理服务、Pi 客户端观测或原生计时报出的请求：会话日志耗时和首字均为估算值
+ * （会话日志另有估算，见 [getEstimatedTokensPerSecond]）；没有流式首个输出的请求不算精确速度。
  */
 export function getGenerationMs(
   log: OutputTokensPerSecondInput,
@@ -101,6 +101,7 @@ export function isSessionLogRequest(log: { dataSource?: unknown }): boolean {
     ![
       "proxy",
       "pi_observed",
+      "pi_observed_call",
       "pi_observed_turn",
       "antigravity_native",
     ].includes(log.dataSource)
@@ -134,6 +135,29 @@ export function getEstimatedTokensPerSecond(
   const latencyMs = parseFiniteNumber(log.latencyMs) as number;
   const tps = outputTokens / (latencyMs / 1000);
   return Number.isFinite(tps) && tps > 0 ? tps : null;
+}
+
+/** A missing number is intentional; explain the same gates used by the table. */
+export function getSpeedUnavailableReason(
+  log: OutputTokensPerSecondInput,
+): string | null {
+  if (isSessionLogRequest(log)) {
+    if (getEstimatedTokensPerSecond(log) != null) return null;
+    const duration = parseFiniteNumber(log.latencyMs);
+    if (duration == null || duration <= 0)
+      return "usage.detail.noTimingSession";
+    const output = parseFiniteNumber(log.outputTokens);
+    if (output == null || output < SPEED_ESTIMATE_MIN_OUTPUT_TOKENS)
+      return "usage.detail.speedEstimateTooFew";
+    return "usage.detail.speedEstimateTooShort";
+  }
+  if (getOutputTokensPerSecond(log) != null) return null;
+  const firstToken = parseFiniteNumber(log.firstTokenMs);
+  if (firstToken == null || firstToken < 0) return "usage.detail.noFirstToken";
+  const output = parseFiniteNumber(log.outputTokens);
+  if (output == null || output < SPEED_MIN_OUTPUT_TOKENS)
+    return "usage.detail.speedTooFew";
+  return "usage.detail.speedBurst";
 }
 
 /**

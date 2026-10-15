@@ -1,6 +1,6 @@
 # Pi 原生契约与实现边界
 
-> **此 Fork 的附加功能**：可显式安装仅计时的 Pi 观测扩展，不接管网络，也不改原生三份 JSON。指标补充到原来的用量行；详细启用方式、Antigravity 原生计时及覆盖边界见 [FORK-NOTES.md](../FORK-NOTES.md)。
+> **此 Fork 的附加功能**：可显式安装仅计时的 Pi 观测扩展，不接管网络，也不改原生三份 JSON。扩展跟随 Pi 实际调用的原生/自定义供应商，为主 Agent 每条 assistant 模型响应补充客户端首个输出与耗时，包含工具调用前后的各次请求；它不要求在 CC Switch 重建供应商或启用路由。指标补充到原来的用量行；计时起点按来源区分，历史数据不伪造为实测。详细启用方式、计时口径、Antigravity 原生计时及覆盖边界见 [FORK-NOTES.md](../FORK-NOTES.md)。
 
 > 验证原则：开发和验收使用当时最新发布的 Pi；CC Switch 不绑定某个 Pi 版本。
 
@@ -30,7 +30,7 @@
 - 供应商级 `name`、`baseUrl`、`apiKey`、`api`、`headers`
 - 模型级 `id`、`name`、`reasoning`、`input`、`contextWindow`、`maxTokens`
 
-已有配置中的其他字段原样保留。供应商是否可管理只取决于节点是否显式存在于 `models.json.providers`：`anthropic`、`openai`、`deepseek` 等 Pi 内置 ID，以及带有未知字段的节点，都按普通显式配置同步。CC Switch 不把 Pi 运行时合并出的内置模型复制回配置，也不解析或执行 `apiKey`、Header 中的环境变量和命令表达式。请求仍由 Pi 自己发出。
+已有配置中的其他字段原样保留。供应商是否可管理只取决于节点是否显式存在于 `models.json.providers`：`anthropic`、`openai`、`deepseek` 等 Pi 内置 ID，以及带有未知字段的节点，都按普通显式配置同步。CC Switch 不把 Pi 运行时合并出的内置模型复制回配置，也不解析或执行 `apiKey`、Header 中的环境变量和命令表达式。请求仍由 Pi 自己发出。可选的 Pi 本地计时扩展不会读取 Provider 凭证，也不会要求代理；它按 `before_provider_request`、公共 `context` 或旧运行时 `turn_start` 的可用性进行客户端侧计时，并为每个持久化 assistant 响应分别关联记录。公共 `context` 起点包含之后的请求准备/认证，因此详情明确标为 `pi_observed_call`，不是与路由网络接收起点完全等价的网络 TTFT。配置文件历史记录无法追溯真实的首个流式输出，仍只按会话日志估算并标记 `≈`。
 
 Pi 在全局设置中保存的当前供应商和模型不进入供应商列表状态。启用供应商只把条目加入 `models.json`，不会写 `defaultProvider` 或 `defaultModel`。移除或删除全局默认供应商时，前端在原有确认框内给出非阻塞提醒，后端允许继续且不改写默认项。编辑显式供应商同样不修改当前供应商或模型；失效引用和回退由 Pi 原生处理。
 

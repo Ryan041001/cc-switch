@@ -508,6 +508,7 @@ fn parse_pi_observation(entry: &Value) -> Option<PiObservation> {
     };
     let data_source = match data.get("timingBasis")?.as_str()? {
         "provider_request" => "pi_observed",
+        "model_call" => "pi_observed_call",
         "turn_start" => "pi_observed_turn",
         _ => return None,
     };
@@ -530,7 +531,7 @@ fn apply_pi_observation(
          SET latency_ms = ?1, first_token_ms = ?2, duration_ms = ?1,
              is_streaming = ?3, data_source = ?4
          WHERE request_id = ?5 AND app_type = 'pi'
-           AND data_source IN ('pi_session', 'pi_observed', 'pi_observed_turn')
+           AND data_source IN ('pi_session', 'pi_observed', 'pi_observed_call', 'pi_observed_turn')
            AND (latency_ms IS NOT ?1 OR first_token_ms IS NOT ?2 OR duration_ms IS NOT ?1
                 OR is_streaming IS NOT ?3 OR data_source IS NOT ?4)",
         rusqlite::params![
@@ -1945,6 +1946,69 @@ mod tests {
             lock_conn!(db.conn)
                 .query_row("SELECT COUNT(*) FROM proxy_request_logs", [], |r| r.get(0))?;
         assert_eq!(count, 0);
+        Ok(())
+    }
+
+    #[test]
+    fn model_call_observations_follow_all_providers_without_duplicate_billing(
+    ) -> Result<(), AppError> {
+        let db = Database::memory()?;
+        let dir = tempfile::tempdir().unwrap();
+        let timestamp = "2026-10-15T00:00:01Z";
+        let mut paths = Vec::new();
+        for (index, provider) in ["openai", "anthropic", "google", "custom-from-models-json"]
+            .iter()
+            .enumerate()
+        {
+            let path = dir.path().join(format!("{index}.jsonl"));
+            let id = format!("assistant-{index}");
+            let mut assistant: Value =
+                serde_json::from_str(&assistant_line(&id, timestamp, 42)).unwrap();
+            assistant["message"]["provider"] = Value::from(*provider);
+            assistant["message"]["usage"]["output"] = Value::from(1200);
+            let mut observation = observation_entry(&id, timestamp);
+            observation["data"]["timingBasis"] = Value::from("model_call");
+            // Anticipate scanners seeing custom entries before or after messages.
+            let lines = [
+                format!(r#"{{"type":"session","id":"session-{index}"}}"#),
+                assistant.to_string(),
+                observation.to_string(),
+            ];
+            write_lines(&path, &lines.iter().map(String::as_str).collect::<Vec<_>>());
+            paths.push(path);
+        }
+        assert_eq!(sync_pi_files(&db, &paths).imported, 4);
+        assert_eq!(sync_pi_files(&db, &paths).imported, 0);
+        {
+            let conn = lock_conn!(db.conn);
+            let (count, tokens, ttft): (i64, i64, i64) = conn.query_row(
+                "SELECT COUNT(*), SUM(output_tokens), MIN(first_token_ms) FROM proxy_request_logs
+                 WHERE data_source = 'pi_observed_call'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )?;
+            assert_eq!((count, tokens, ttft), (4, 4800, 2000));
+            // A later corrected metric can update a model-call row, but not bill again.
+            let mut observation = observation_entry("assistant-0", timestamp);
+            observation["data"]["timingBasis"] = Value::from("model_call");
+            observation["data"]["firstTokenMs"] = Value::from(1000);
+            assert_eq!(
+                apply_pi_observation(&conn, &parse_pi_observation(&observation).unwrap())?,
+                1
+            );
+            assert_eq!(
+                apply_pi_observation(&conn, &parse_pi_observation(&observation).unwrap())?,
+                0
+            );
+        }
+        let stats = db.get_model_stats(None, None, Some("pi"), None, None)?;
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].request_count, 4);
+        assert_eq!(stats[0].speed_output_tokens, 4800);
+        assert_eq!(stats[0].speed_generation_ms, 33000);
+        assert_eq!(stats[0].first_token_median_ms, Some(2000));
+        assert_eq!(stats[0].est_speed_output_tokens, 0);
+        assert_eq!(stats[0].est_first_token_median_ms, None);
         Ok(())
     }
 

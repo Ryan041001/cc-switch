@@ -130,7 +130,7 @@ export interface ProviderStats {
   estSpeedOutputTokens?: number;
   /** 估算速度分母：同一批请求的估算耗时（含首字等待）之和，毫秒 */
   estSpeedDurationMs?: number;
-  /** 首字时间中位数（毫秒）：经路由服务、成功的流式明细请求；没有时为 null */
+  /** 首字时间中位数（毫秒）：成功的代理、Pi 客户端实测或原生计时明细；各来源起点不同 */
   firstTokenMedianMs?: number | null;
   /** 估算首字中位数（毫秒）：会话日志导入、按时间戳推出了首字的请求；没有精确值时才显示，带 ≈ */
   estFirstTokenMedianMs?: number | null;

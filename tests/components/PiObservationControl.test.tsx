@@ -9,12 +9,18 @@ const api = vi.hoisted(() => ({
 }));
 vi.mock("@/lib/api/pi", () => ({ piApi: api }));
 vi.mock("react-i18next", () => ({
-  useTranslation: () => ({ t: (key: string) => key }),
+  useTranslation: () => ({
+    t: (key: string, args?: { time?: string }) =>
+      args?.time ? `${key}: ${args.time}` : key,
+    i18n: { language: "en" },
+  }),
 }));
 
 const initial = {
   enabled: false,
   canManage: true,
+  updateAvailable: false,
+  lastObservedAt: null,
   extensionPath: "/tmp/pi-test/extensions/cc-switch-metrics.ts",
 };
 
@@ -49,6 +55,40 @@ describe("Pi observation installation control", () => {
       screen.getByText("usage.sources.piMetricsReload"),
     ).toBeInTheDocument();
     expect(screen.getByText(initial.extensionPath)).toBeInTheDocument();
+  });
+
+  it("upgrades a recognized installed version without turning observation off", async () => {
+    api.getObservationStatus.mockResolvedValue({
+      ...initial,
+      enabled: true,
+      updateAvailable: true,
+    });
+    mount();
+    const upgrade = await screen.findByRole("button", {
+      name: "usage.sources.piMetricsUpgrade",
+    });
+    expect(screen.getByRole("switch")).toBeChecked();
+    fireEvent.click(upgrade);
+    await waitFor(() =>
+      expect(api.setObservationEnabled).toHaveBeenCalledWith(true),
+    );
+    await waitFor(() => expect(upgrade).not.toBeInTheDocument());
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "usage.sources.piMetricsAwaiting",
+    );
+  });
+
+  it("shows the last imported measurement without claiming the process is online", async () => {
+    api.getObservationStatus.mockResolvedValue({
+      ...initial,
+      enabled: true,
+      lastObservedAt: 1_800_000_000,
+    });
+    mount();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "usage.sources.piMetricsLastObserved",
+    );
+    expect(screen.queryByText("usage.sources.piMetricsAwaiting")).toBeNull();
   });
 
   it("does not overwrite a conflicting extension", async () => {

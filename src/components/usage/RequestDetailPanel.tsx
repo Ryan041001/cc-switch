@@ -19,8 +19,7 @@ import {
 import { cn } from "@/lib/utils";
 import { extractErrorMessage } from "@/utils/errorUtils";
 import {
-  SPEED_ESTIMATE_MIN_OUTPUT_TOKENS,
-  SPEED_MIN_OUTPUT_TOKENS,
+  getSpeedUnavailableReason,
   fmtInt,
   formatEstimatedTokensPerSecond,
   formatOutputTokensPerSecond,
@@ -155,7 +154,9 @@ function useDetailSections(request: RequestLog) {
               ? t(
                   request.dataSource === "pi_observed_turn"
                     ? "usage.detail.sourcePiObservedTurn"
-                    : "usage.detail.sourcePiObserved",
+                    : request.dataSource === "pi_observed_call"
+                      ? "usage.detail.sourcePiObservedCall"
+                      : "usage.detail.sourcePiObserved",
                 )
               : t("usage.detail.sourceSession"),
       title: request.dataSource ?? "proxy",
@@ -259,10 +260,7 @@ function useDetailSections(request: RequestLog) {
           : {
               key: "speed",
               label: t("usage.speed"),
-              value:
-                request.outputTokens < SPEED_ESTIMATE_MIN_OUTPUT_TOKENS
-                  ? t("usage.detail.speedEstimateTooFew")
-                  : "—",
+              value: t(getSpeedUnavailableReason(request)!),
               muted: true,
             },
         {
@@ -279,6 +277,13 @@ function useDetailSections(request: RequestLog) {
           label: t("usage.detail.firstTokenEstimated"),
           value: `${(firstToken / 1000).toFixed(1)}s`,
         });
+      } else {
+        performance.splice(1, 0, {
+          key: "ttft",
+          label: t("usage.detail.firstTokenEstimated"),
+          value: t("usage.detail.noFirstTokenSession"),
+          muted: true,
+        });
       }
     }
   } else {
@@ -289,32 +294,26 @@ function useDetailSections(request: RequestLog) {
             label: t("usage.speed"),
             value: t("usage.speedValue", { value: tps }),
           }
-        : firstToken == null
-          ? {
-              key: "speed",
-              label: t("usage.speed"),
-              value: t("usage.detail.noFirstToken"),
-              muted: true,
-            }
-          : request.outputTokens < SPEED_MIN_OUTPUT_TOKENS
-            ? {
-                key: "speed",
-                label: t("usage.speed"),
-                value: t("usage.detail.speedTooFew"),
-                muted: true,
-              }
-            : {
-                key: "speed",
-                label: t("usage.speed"),
-                value: "—",
-                muted: true,
-              };
+        : {
+            key: "speed",
+            label: t("usage.speed"),
+            value: t(getSpeedUnavailableReason(request)!),
+            muted: true,
+          };
     performance = [speedRow];
     if (firstToken != null) {
       performance.push({
         key: "ttft",
         label: t("usage.detail.firstToken"),
         value: `${(firstToken / 1000).toFixed(1)}s`,
+        title: `${fmtInt(firstToken, locale)} ms`,
+      });
+    } else {
+      performance.push({
+        key: "ttft",
+        label: t("usage.detail.firstToken"),
+        value: t("usage.detail.noStreamingTiming"),
+        muted: true,
       });
     }
     if (latency != null) {

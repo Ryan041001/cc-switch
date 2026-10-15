@@ -111,7 +111,7 @@ describe("RequestDetailPanel", () => {
     expect(screen.queryByText("usage.sources.nativeCostUnknown")).toBeNull();
   });
 
-  it.each(["pi_observed", "pi_observed_turn"])(
+  it.each(["pi_observed", "pi_observed_call", "pi_observed_turn"])(
     "shows measured Pi timing without presenting it as an HTTP proxy: %s",
     (dataSource) => {
       renderWith(log({ appType: "pi", dataSource }));
@@ -124,7 +124,9 @@ describe("RequestDetailPanel", () => {
         screen.getByText(
           dataSource === "pi_observed"
             ? "usage.detail.sourcePiObserved"
-            : "usage.detail.sourcePiObservedTurn",
+            : dataSource === "pi_observed_call"
+              ? "usage.detail.sourcePiObservedCall"
+              : "usage.detail.sourcePiObservedTurn",
         ),
       ).toBeInTheDocument();
     },
@@ -175,6 +177,12 @@ describe("RequestDetailPanel", () => {
       screen.getByText("usage.detail.durationEstimated"),
     ).toBeInTheDocument();
     expect(screen.getByText("20.0s")).toBeInTheDocument();
+    expect(
+      screen.getByText("usage.detail.firstTokenEstimated"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("usage.detail.noFirstTokenSession"),
+    ).toBeInTheDocument();
     expect(screen.queryByText("usage.detail.firstToken")).toBeNull();
   });
 

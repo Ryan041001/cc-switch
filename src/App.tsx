@@ -93,6 +93,7 @@ import {
   useToolUpdatesAvailable,
 } from "@/components/apps/useToolManagement";
 import { UsagePage } from "@/components/usage/UsagePage";
+import { PiObservationPanel } from "@/components/usage/PiObservationPanel";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { SwitchModePanel } from "@/components/providers/mode/SwitchModePanel";
 import { DesktopAccessBar } from "@/components/providers/mode/DesktopAccessBar";
@@ -1321,6 +1322,7 @@ function App() {
         className="min-h-0 flex-1 overflow-y-auto scroll-stable overflow-x-hidden px-6 pb-12 pt-4"
       >
         <div className="space-y-4">
+          {activeApp === "pi" && <PiObservationPanel />}
           {activeApp === "claude-desktop" && (
             <DesktopAccessBar
               current={providers[currentProviderId]}

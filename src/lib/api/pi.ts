@@ -22,7 +22,9 @@ export type PiSessionDiscovery =
 export interface PiObservationStatus {
   enabled: boolean;
   canManage: boolean;
+  updateAvailable: boolean;
   extensionPath: string;
+  lastObservedAt: number | null;
 }
 
 export const piApi = {

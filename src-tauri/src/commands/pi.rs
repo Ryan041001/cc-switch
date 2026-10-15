@@ -7,15 +7,18 @@ use tauri::State;
 
 #[tauri::command]
 pub(crate) fn get_pi_observation_status(
+    state: State<'_, AppState>,
 ) -> Result<crate::services::pi_observation::PiObservationStatus, String> {
-    crate::services::pi_observation::status().map_err(|error| error.to_string())
+    crate::services::pi_observation::status(&state.db).map_err(|error| error.to_string())
 }
 
 #[tauri::command]
 pub(crate) fn set_pi_observation_enabled(
+    state: State<'_, AppState>,
     enabled: bool,
 ) -> Result<crate::services::pi_observation::PiObservationStatus, String> {
-    crate::services::pi_observation::set_enabled(enabled).map_err(|error| error.to_string())
+    crate::services::pi_observation::set_enabled(&state.db, enabled)
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]

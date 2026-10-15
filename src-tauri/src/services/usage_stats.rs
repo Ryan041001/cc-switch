@@ -137,7 +137,7 @@ pub struct ProviderStats {
     pub est_speed_output_tokens: u64,
     /// 估算速度的分母：同一批请求的 latency_ms 之和，单位毫秒。
     pub est_speed_duration_ms: u64,
-    /// 首字时间中位数（毫秒）：经路由服务、成功的流式明细请求；没有这样的请求时为 None。
+    /// 首字时间中位数（毫秒）：成功的代理、Pi 客户端实测或原生计时明细；没有时为 None。各来源起点详见明细。
     pub first_token_median_ms: Option<u64>,
     /// 估算首字中位数（毫秒）：会话日志导入、按时间戳推出了首字的明细请求。
     /// 和上面分开：口径不同，界面上只在没有精确值时显示，带 ≈。
@@ -151,12 +151,15 @@ pub const SPEED_MIN_OUTPUT_TOKENS: i64 = 100;
 /// 或短回复整段落在同一个网络包里，算出来的是传输突发而不是生成速度。
 pub const SPEED_MIN_GENERATION_MS: i64 = 100;
 
+const MEASURED_SOURCES_SQL: &str =
+    "('proxy', 'pi_observed', 'pi_observed_call', 'pi_observed_turn', 'antigravity_native')";
+
 /// 明细行能不能计速度的 SQL 条件（和前端 `isSpeedEligible` 同口径）。会话日志导入的行
 /// 也可能有首字（按时间戳推出来的），所以先按来源分开，不能只看有没有首字。
 fn speed_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
     format!(
-        "{data_source} IN ('proxy', 'pi_observed', 'pi_observed_turn', 'antigravity_native') AND {alias}.first_token_ms IS NOT NULL \
+        "{data_source} IN {MEASURED_SOURCES_SQL} AND {alias}.first_token_ms IS NOT NULL \
          AND {alias}.output_tokens >= {SPEED_MIN_OUTPUT_TOKENS} \
          AND {alias}.latency_ms - {alias}.first_token_ms >= {SPEED_MIN_GENERATION_MS}"
     )
@@ -176,17 +179,17 @@ pub const SPEED_ESTIMATE_MIN_DURATION_MS: i64 = 1000;
 fn speed_estimate_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
     format!(
-        "{data_source} NOT IN ('proxy', 'pi_observed', 'pi_observed_turn', 'antigravity_native') \
+        "{data_source} NOT IN {MEASURED_SOURCES_SQL} \
          AND {alias}.output_tokens >= {SPEED_ESTIMATE_MIN_OUTPUT_TOKENS} \
          AND {alias}.latency_ms >= {SPEED_ESTIMATE_MIN_DURATION_MS}"
     )
 }
 
-/// 明细行能不能计首字时间：成功、有实测或原生报告的首字（不包括历史日志估算）。
+/// 明细行能不能计首字时间：成功、有代理/Pi 客户端实测或原生报告的首字（不包括历史日志估算）。
 fn first_token_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
     format!(
-        "{data_source} IN ('proxy', 'pi_observed', 'pi_observed_turn', 'antigravity_native') AND {alias}.first_token_ms IS NOT NULL \
+        "{data_source} IN {MEASURED_SOURCES_SQL} AND {alias}.first_token_ms IS NOT NULL \
          AND {alias}.status_code >= 200 AND {alias}.status_code < 300"
     )
 }
@@ -196,7 +199,7 @@ fn first_token_eligible_sql(alias: &str) -> String {
 /// 组装请求的时间，系统性偏高。
 fn est_first_token_eligible_sql(alias: &str) -> String {
     let data_source = data_source_expr(alias);
-    format!("{data_source} NOT IN ('proxy', 'pi_observed', 'pi_observed_turn', 'antigravity_native') AND {alias}.first_token_ms IS NOT NULL")
+    format!("{data_source} NOT IN {MEASURED_SOURCES_SQL} AND {alias}.first_token_ms IS NOT NULL")
 }
 
 /// 按分组键取首字时间的中位数（毫秒）。首字时间长尾明显，偶尔一次排队就是十几秒，

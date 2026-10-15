@@ -9,10 +9,16 @@ on:
   schedule:
     - cron: "41 19 * * 0" # 周一 03:41（北京时间）
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      checkout_ref:
+        description: "Exact candidate commit to validate before upstream-sync promotion"
+        type: string
+        required: true
 
 concurrency:
   # 带上事件名：定时全量和 push 到 main 都在 refs/heads/main 上，别互相取消
-  group: ci-${{ github.event_name }}-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ inputs.checkout_ref || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -32,16 +38,21 @@ jobs:
       - name: Checkout
         if: github.event_name == 'push'
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          persist-credentials: false
 
       - name: Detect changed paths
         id: filter
-        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        if: inputs.checkout_ref == '' && (github.event_name == 'pull_request' || github.event_name == 'push')
         uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d # v4.0.3
         with:
           filters: |
             frontend:
               - "src/**"
               - "integrations/pi/**"
+              - "scripts/upstream-sync.mjs"
+              - "scripts/tests/**"
               - "tests/**"
               - "index.html"
               - "package.json"
@@ -71,6 +82,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          persist-credentials: false
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -106,6 +120,9 @@ jobs:
       - name: Check formatting
         run: pnpm format:check
 
+      - name: Sync safety tests
+        run: node --test scripts/tests/upstream-sync.test.mjs
+
       - name: Unit tests
         run: pnpm test:unit
 
@@ -124,6 +141,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          persist-credentials: false
 
       # rust-toolchain.toml 是编译器版本的唯一来源：直接装它，免得先装 stable 再被 rustup 换掉
       - name: Read pinned Rust toolchain
@@ -191,6 +211,9 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.checkout_ref || github.sha }}
+          persist-credentials: false
 
       - name: Read pinned Rust toolchain
         id: rust-toolchain

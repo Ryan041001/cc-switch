@@ -1,4 +1,4 @@
-> **Ryan041001 二开分支：**基于 v4.0.12，已合并 Antigravity 原生用量/计时与可选的 Pi 实时指标观测（不是网络代理接管）。功能边界、启用方式与构建说明见 [FORK-NOTES.md](FORK-NOTES.md)。
+> **Ryan041001 二开分支：**`main` 自动同步官方正式版（初始基于 v4.0.12），已合并 Antigravity 原生用量/计时与可选的 Pi 实时指标观测（不是网络代理接管）。功能边界、启用方式与构建说明见 [FORK-NOTES.md](FORK-NOTES.md)。
 
 <div align="center">
 

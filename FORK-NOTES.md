@@ -1,9 +1,9 @@
 # Ryan041001 的 CC Switch 二开版
 
-基于官方 **v4.0.12**，开发分支 `feat/pi-usage-observability`。
+初始基于官方 **v4.0.12**。维护分支为 `main`，保留 `feat/pi-usage-observability` 作为最初开发分支。后续正式版由自动同步维护，不把二开功能还原成官方原版。
 
 - 上游：<https://github.com/farion1231/cc-switch>
-- Fork：<https://github.com/Ryan041001/cc-switch/tree/feat/pi-usage-observability>
+- Fork：<https://github.com/Ryan041001/cc-switch>
 - 原来的 `cc-switch-antigravity` 是工作副本，`antigravity-cc-switch-bridge/cc-switch-antigravity-sync.patch` 是同一份改动的补丁包；**不应重复套用**。此分支已经包含实现，不再依赖外部补丁。
 
 ## 为什么没有给 Pi 强行套用 Claude/Codex 的代理接管
@@ -54,6 +54,32 @@
 - provider 必须自己上报真实 usage 才能从 Pi 行计算 TPS。
 - **Antigravity ACP 当前向 Pi 上报 0 token**：不将外层轮次与原生库中的多个模型调用按时间强行配对。它的 token 和原生首字/耗时仍由上面的原生导入器提供；扩展不会凭空新增一个 0 token 请求或重复计费。
 - 数据刷新走原有会话扫描/“立即同步”。安装在磁盘上的状态不代表一个未 `/reload` 的 Pi 进程已经加载它。
+
+## 与官方自动同步
+
+已配置 [Sync upstream](https://github.com/Ryan041001/cc-switch/actions/workflows/sync-upstream.yml)：
+
+- 每 6 小时检查一次官方最新**正式 Release**（不含草稿、预发布）。GitHub 定时任务可能排队/延迟，不是秒级同步。
+- 默认不追未发布的官方 `main`；手动运行时可选 `main`。
+- 没有新版本就成功退出，不改分支、不报错。
+- 在每次运行独有的临时分支中执行普通 Git merge，保留 fork 的历史及改动。不使用 `ours/theirs` 消掉冲突，不使用强推或重置维护分支。
+- 完整调用现有 CI（前端、Linux/macOS/Windows 后端、WSL2 测试），检查的是**合并后的确切 SHA**。全部通过后才快进更新维护分支 `main`。
+- 合并冲突或检查失败：保留原来的 `main`，Actions 标红，并开一个指派给仓库所有者的 Issue。后续失败更新同一 Issue，不每 6 小时刷一个新 Issue；通过验证并完成同步后自动关闭。是否收到邮件由 GitHub 通知设置决定。
+- 验证期间若你自己提交了新代码，旧候选不会覆盖它：本次延后，下次重新合并验证。
+- 临时分支在结束后清理；有变化/失败时保留 14 天诊断 artifact（冲突列表、候选补丁等）。失败运行可以在 Actions 页面手动重跑。
+- 默认只使用 GitHub 自动提供的仓库 Token；完整 CI 的 checkout 不保留写凭据，也不继承维护 Token。
+
+手动检查：Actions → **Sync upstream** → **Run workflow**，选择分支 `main`、channel `release`。勾选 `verify_current` 可在没有新版本时也强制跑完整 CI。
+
+### 权限与边界
+
+仓库 Issues 需要保持启用，否则只能在 Actions 日志中看到报错。新建 fork 的 Actions 可能需要手动启用；GitHub 也可能因公共仓库长时间无活动而停用 schedule，届时需要在 Actions 重新启用。
+
+GitHub 的内置 Token 在部分涉及 `.github/workflows/` 的写入上可能被拒绝。**不会偷偷复用或上传你本机的登录凭据**。如果日志明确提示 workflow 权限不足，需要你创建仅授权本 fork 的细粒度 Token，授予 Contents 与 Workflows 读写权限，存为仓库 Actions secret **`UPSTREAM_SYNC_TOKEN`**。同步的两个写入阶段会优先使用它；CI 测试阶段不接收该 secret。权限/网络故障也会安全停止并报错，不能承诺除了文本冲突之外永远不会失败。
+
+GitHub 上的 `main` 会自动推进，但本机工作目录不会被远程任务偷偷改写。本地跟进时，在干净工作区切到跟踪 `fork/main` 的 `main`，执行 `git pull --ff-only`；有未提交改动时先自行提交/备份，不要强制重置。
+
+自动同步的是**仓库源码**，不是你电脑里已安装的 App。本 fork 尚无自己的 updater 签名密钥，不会自动下载官方包覆盖二开版。构建和 App 升级仍按下一节执行；源码同步不修改你的本地配置或统计库。
 
 ## 构建与更新
 

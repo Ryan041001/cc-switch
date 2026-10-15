@@ -1,0 +1,191 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: "Official stable releases (default), or unreleased main"
+        type: choice
+        options: [release, main]
+        default: release
+      verify_current:
+        description: "Run full CI even when the selected upstream is already included"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: upstream-sync-main
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.repository == 'Ryan041001/cc-switch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      changed: ${{ steps.merge.outputs.changed }}
+      base_sha: ${{ steps.merge.outputs.base_sha }}
+      candidate_sha: ${{ steps.merge.outputs.candidate_sha }}
+      candidate_branch: ${{ steps.merge.outputs.candidate_branch }}
+      upstream_ref: ${{ steps.merge.outputs.upstream_ref }}
+      conflict_files: ${{ steps.merge.outputs.conflict_files }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Test sync safety and preserve the trusted script before merging
+        run: |
+          node --test scripts/tests/upstream-sync.test.mjs
+          cp scripts/upstream-sync.mjs "$RUNNER_TEMP/upstream-sync.mjs"
+      - name: Resolve the official update
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SYNC_CHANNEL: ${{ inputs.channel || 'release' }}
+        run: |
+          if [ "$SYNC_CHANNEL" = main ]; then
+            ref=refs/heads/main
+          else
+            tag=$(gh api repos/farion1231/cc-switch/releases/latest --jq .tag_name)
+            ref="refs/tags/$tag"
+          fi
+          git check-ref-format "$ref"
+          printf 'UPSTREAM_REF=%s\n' "$ref" >> "$GITHUB_ENV"
+      - name: Merge into an isolated candidate (never main)
+        id: merge
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          CANDIDATE_BRANCH: automation/upstream-sync-${{ github.run_id }}-${{ github.run_attempt }}
+          SYNC_REPORT_DIR: ${{ runner.temp }}/sync-prepare
+        run: |
+          gh auth setup-git --hostname github.com
+          node "$RUNNER_TEMP/upstream-sync.mjs" prepare
+      - name: Save diagnostic evidence
+        if: always() && (steps.merge.outputs.changed == 'true' || failure())
+        uses: actions/upload-artifact@v7
+        with:
+          name: upstream-sync-evidence
+          path: ${{ runner.temp }}/sync-prepare/
+          if-no-files-found: ignore
+          retention-days: 14
+
+  validate:
+    needs: prepare
+    if: needs.prepare.outputs.changed == 'true' || inputs.verify_current == true
+    permissions:
+      contents: read
+      pull-requests: read
+    uses: ./.github/workflows/ci.yml
+    with:
+      checkout_ref: ${{ needs.prepare.outputs.candidate_sha }}
+
+  promote:
+    needs: [prepare, validate]
+    if: needs.prepare.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      status: ${{ steps.promote.outputs.status }}
+    steps:
+      # Use the workflow's trusted script, NOT code from the candidate being tested.
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v6
+        with:
+          node-version: "20"
+      - name: Publish only the tested SHA, without force-pushing
+        id: promote
+        env:
+          GH_TOKEN: ${{ secrets.UPSTREAM_SYNC_TOKEN || github.token }}
+          BASE_SHA: ${{ needs.prepare.outputs.base_sha }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate_sha }}
+          CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+          SYNC_REPORT_DIR: ${{ runner.temp }}/sync-promote
+        run: |
+          gh auth setup-git --hostname github.com
+          node scripts/upstream-sync.mjs promote
+
+  finish:
+    needs: [prepare, validate, promote]
+    if: always() && github.repository == 'Ryan041001/cc-switch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Report failures, close resolved alerts, and remove the temporary ref
+        uses: actions/github-script@v8
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          VALIDATE_RESULT: ${{ needs.validate.result }}
+          PROMOTE_RESULT: ${{ needs.promote.result }}
+          PROMOTE_STATUS: ${{ needs.promote.outputs.status }}
+          CHANGED: ${{ needs.prepare.outputs.changed }}
+          UPSTREAM_REF: ${{ needs.prepare.outputs.upstream_ref }}
+          CONFLICT_FILES: ${{ needs.prepare.outputs.conflict_files }}
+          CANDIDATE_BRANCH: ${{ needs.prepare.outputs.candidate_branch }}
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const run = `${context.serverUrl}/${owner}/${repo}/actions/runs/${context.runId}`;
+            const marker = '<!-- cc-switch-upstream-sync -->';
+            const title = '[upstream-sync] Automatic update needs attention';
+            const failed = [process.env.PREPARE_RESULT, process.env.VALIDATE_RESULT,
+              process.env.PROMOTE_RESULT].includes('failure');
+            const resolved = ['published', 'already_published'].includes(process.env.PROMOTE_STATUS)
+              || (process.env.CHANGED === 'false' && process.env.VALIDATE_RESULT === 'success');
+            try {
+              if (failed || resolved) {
+                const issues = await github.paginate(github.rest.issues.listForRepo,
+                  { owner, repo, state: 'open', per_page: 100 });
+                const existing = issues.find(issue => !issue.pull_request && issue.title === title
+                  && issue.body?.includes(marker) && issue.user?.login === 'github-actions[bot]');
+                if (failed) {
+                  let conflicts = [];
+                  try { conflicts = JSON.parse(process.env.CONFLICT_FILES || '[]'); } catch {}
+                  const body = `${marker}\n自动同步未发布，维护分支 main 保持原样。\n\n`
+                    + `上游：${process.env.UPSTREAM_REF || '见日志'}\n\n`
+                    + `合并：${process.env.PREPARE_RESULT}；验证：${process.env.VALIDATE_RESULT}；发布：${process.env.PROMOTE_RESULT}\n\n`
+                    + (conflicts.length ? `冲突文件：\n\n${conflicts.map(path => '- ' + path).join('\n')}\n\n` : '')
+                    + `[查看日志和诊断补丁](${run})。不要使用 ours/theirs 或强推跳过冲突；修复并通过验证后再同步。`;
+                  if (existing) {
+                    await github.rest.issues.update({ owner, repo, issue_number: existing.number, body });
+                  } else {
+                    await github.rest.issues.create({ owner, repo, title, body, assignees: [owner] });
+                  }
+                } else if (existing) {
+                  await github.rest.issues.createComment({ owner, repo, issue_number: existing.number,
+                    body: `同步/验证已恢复：[本次检查](${run})。` });
+                  await github.rest.issues.update({ owner, repo, issue_number: existing.number, state: 'closed' });
+                }
+              }
+              await core.summary.addHeading('Upstream sync').addTable([
+                [{ data: 'Stage', header: true }, { data: 'Result', header: true }],
+                ['Prepare', process.env.PREPARE_RESULT || 'unknown'],
+                ['Validate', process.env.VALIDATE_RESULT || 'skipped'],
+                ['Publish', process.env.PROMOTE_STATUS || process.env.PROMOTE_RESULT || 'skipped'],
+              ]).write();
+            } finally {
+              const branch = process.env.CANDIDATE_BRANCH;
+              if (branch && /^automation\/upstream-sync-\d+-\d+$/.test(branch)) {
+                try {
+                  await github.rest.git.deleteRef({ owner, repo, ref: `heads/${branch}` });
+                } catch (error) {
+                  if (error.status !== 404) throw error;
+                }
+              }
+            }

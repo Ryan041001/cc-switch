@@ -122,6 +122,11 @@ opt-level = "s"
 # 使用 unwind 以便 panic hook 能捕获 backtrace（abort 会直接终止无法捕获）
 panic = "unwind"
 strip = "symbols"
+# Apple clang 21（Xcode 26 链接器）下 strip=symbols 会产出 LINKEDIT 字符串池未对齐
+# 的 proc-macro dylib，rustc 编译时无法 dlopen（报「can't find crate for ...」）。
+# proc-macro 不参与分发，跳过 strip；最终二进制照常 strip。
+[profile.release.build-override]
+strip = false
 
 [dev-dependencies]
 serial_test = "3"

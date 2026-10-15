@@ -389,7 +389,10 @@ struct Record {
     response: i64,
     duration_ms: i64,
     first_token_ms: i64,
-    failed: bool,
+    /// Raw upstream error text when the generation failed (None otherwise).
+    /// Storing the real reason keeps the ledger's status codes and the detail
+    /// panel consistent with what actually happened in the IDE.
+    error: Option<String>,
     /// ACP's friendly model name (e.g. `gemini-3.8-flash-high`). `response_model`
     /// may carry an internal serving-variant suffix (e.g. `-n`), so this is the
     /// better basis for matching a pricing row.
@@ -412,10 +415,36 @@ fn duration_ms(message: &Proto<'_>, field: u32) -> SafeResult<i64> {
     }
     Ok((seconds * 1000 + nanos / 1_000_000) as i64)
 }
+/// Field 5 of the outer metadata carries the raw upstream error text. Keep it
+/// readable, single-line and bounded so the detail panel shows the real
+/// failure reason instead of a generic label.
+fn error_text(bytes: &[u8]) -> Option<String> {
+    let text: String = String::from_utf8_lossy(bytes)
+        .chars()
+        .map(|c| {
+            if (c as u32) < 32 || c == '\u{7f}' {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    Some(text.chars().take(500).collect())
+}
 fn parse_record(blob: &[u8], trajectory: &str, index: i64) -> SafeResult<Option<Record>> {
     let metadata = Proto::parse(blob)?;
     let chat = metadata.sub(1)?;
-    if !chat.has(4) || !chat.has(12) {
+    // Field 5 on the outer metadata is the generation's error text. A failed
+    // generation aborts before usage or the stream window is recorded, so the
+    // token guards below must not swallow it: the imported row is what makes
+    // the failure — and its status code — visible in the usage ledger.
+    let error = error_text(metadata.bytes(5)?);
+    let failed = error.is_some();
+    if !failed && (!chat.has(4) || !chat.has(12)) {
         return Ok(None);
     }
     let usage = chat.sub(4)?;
@@ -428,20 +457,35 @@ fn parse_record(blob: &[u8], trajectory: &str, index: i64) -> SafeResult<Option<
         counts[index] = value as i64;
     }
     let [input, output, cache_read, cache_write, thinking, response] = counts;
-    if counts[..4].iter().all(|n| *n == 0) {
+    if counts[..4].iter().all(|n| *n == 0) && !failed {
         return Ok(None);
     }
     if (usage.has(9) || usage.has(10)) && output != thinking + response {
         return Err("native output/thinking decomposition changed");
     }
-    let model = chat.text(19)?;
+    let model_display = chat.text(21)?.to_owned();
+    let mut model = chat.text(19)?.to_owned();
     if model.is_empty() {
-        return Err("actual response model missing");
+        // A failure can abort before the response model is assigned; fall back
+        // to the ACP display name (then "unknown") so the row stays attributable.
+        if !failed {
+            return Err("actual response model missing");
+        }
+        model = if model_display.is_empty() {
+            "unknown".to_owned()
+        } else {
+            model_display.clone()
+        };
     }
     let timestamp = chat.sub(9)?.sub(4)?;
     let seconds = timestamp.int(1)?;
     let nanos = timestamp.int(2)?;
     if !(946684800..=4102444800).contains(&seconds) || nanos >= 1_000_000_000 {
+        // A failure without a usable time cannot be attributed; skip that blob
+        // instead of failing the whole source read.
+        if failed {
+            return Ok(None);
+        }
         return Err("native generation timestamp missing or invalid");
     }
     let mut identity = json!(["native", trajectory, index]);
@@ -452,14 +496,22 @@ fn parse_record(blob: &[u8], trajectory: &str, index: i64) -> SafeResult<Option<
             break;
         }
     }
-    let model_display = chat.text(21)?.to_owned();
+    // Timing of a failed generation is not a billing fact; tolerate junk there.
+    let (stream_ms, ttft_ms) = if failed {
+        (
+            duration_ms(&chat, 12).unwrap_or(0),
+            duration_ms(&chat, 11).unwrap_or(0),
+        )
+    } else {
+        (duration_ms(&chat, 12)?, duration_ms(&chat, 11)?)
+    };
     Ok(Some(Record {
         request_id: format!("{PREFIX}{}", digest(identity)),
         semantic_id: format!(
             "antigravity_native_semantic:{}",
             digest(json!([model, seconds, nanos]))
         ),
-        model: model.to_owned(),
+        model,
         session: trajectory.to_owned(),
         created_at: seconds as i64,
         input,
@@ -468,9 +520,9 @@ fn parse_record(blob: &[u8], trajectory: &str, index: i64) -> SafeResult<Option<
         cache_write,
         thinking,
         response,
-        duration_ms: duration_ms(&chat, 12)?,
-        first_token_ms: duration_ms(&chat, 11)?,
-        failed: !metadata.bytes(5)?.is_empty(),
+        duration_ms: stream_ms,
+        first_token_ms: ttft_ms,
+        error,
         model_display,
     }))
 }
@@ -776,8 +828,8 @@ fn insert_record(connection: &Connection, record: &Record) -> SafeResult<()> {
                 cache_write_cost.to_string(), total_cost.to_string(),
                 record.first_token_ms.saturating_add(record.duration_ms),
                 (record.first_token_ms > 0).then_some(record.first_token_ms), record.duration_ms,
-                if record.failed { 500 } else { 200 },
-                if record.failed { Some("Antigravity native generation failed") } else { None },
+                if record.error.is_some() { 500 } else { 200 },
+                record.error.clone(),
                 record.session, MARKER, record.created_at, ROW_SOURCE,
                 i64::from(record.duration_ms >= NATIVE_MIN_STREAM_WINDOW_MS)])
         .map_err(|_| "native token request insert failed")?;
@@ -856,15 +908,23 @@ fn reprice_existing(connection: &Connection, records: &[Record]) -> SafeResult<u
     }
     Ok(updated)
 }
-// The legacy patch stored streaming_duration as the whole latency. It is the
-// post-first-output phase, separate from time_to_first_token. Repair only our
-// marked rows, without touching their token counts, pricing or durable ledger.
+// Two legacy shapes poison the shared speed rule and must be re-derived:
+// the old patch stored streaming_duration as the whole latency (it is the
+// post-first-output phase, separate from time_to_first_token), and builds
+// before the sustained-window gate marked every native row streaming, so a
+// buffered drain still divided the whole output by a few milliseconds.
+// Repair our marked rows whose stored timing or streaming flag disagrees with
+// the current semantics, without touching token counts, pricing or the ledger.
 fn timing_repair_ids(connection: &Connection, records: &[Record]) -> SafeResult<Vec<String>> {
     let known: std::collections::HashSet<&str> =
         records.iter().map(|r| r.request_id.as_str()).collect();
-    let mut statement = connection.prepare(
-        "SELECT request_id FROM proxy_request_logs WHERE provider_type=?1 AND COALESCE(data_source,'')<>?2"
-    ).map_err(|_| "native timing repair schema unavailable")?;
+    let mut statement = connection
+        .prepare(&format!(
+            "SELECT request_id FROM proxy_request_logs WHERE provider_type=?1 \
+             AND (COALESCE(data_source,'')<>?2 \
+                  OR COALESCE(is_streaming,-1)<>(duration_ms>={NATIVE_MIN_STREAM_WINDOW_MS}))"
+        ))
+        .map_err(|_| "native timing repair schema unavailable")?;
     let ids = statement
         .query_map(params![MARKER, ROW_SOURCE], |r| r.get::<_, String>(0))
         .map_err(|_| "native timing repair query failed")?
@@ -882,13 +942,22 @@ fn repair_existing_timings(connection: &Connection, records: &[Record]) -> SafeR
         records.iter().map(|r| (r.request_id.as_str(), r)).collect();
     for id in &ids {
         let record = by_request[id.as_str()];
-        connection.execute(
-            "UPDATE proxy_request_logs SET latency_ms=?1, first_token_ms=?2, duration_ms=?3, data_source=?4
-             WHERE request_id=?5 AND provider_type=?6",
-            params![record.first_token_ms.saturating_add(record.duration_ms),
-                (record.first_token_ms > 0).then_some(record.first_token_ms), record.duration_ms,
-                ROW_SOURCE, id, MARKER],
-        ).map_err(|_| "native timing repair update failed")?;
+        connection
+            .execute(
+                "UPDATE proxy_request_logs SET latency_ms=?1, first_token_ms=?2, duration_ms=?3, \
+             data_source=?4, is_streaming=?5
+             WHERE request_id=?6 AND provider_type=?7",
+                params![
+                    record.first_token_ms.saturating_add(record.duration_ms),
+                    (record.first_token_ms > 0).then_some(record.first_token_ms),
+                    record.duration_ms,
+                    ROW_SOURCE,
+                    i64::from(record.duration_ms >= NATIVE_MIN_STREAM_WINDOW_MS),
+                    id,
+                    MARKER
+                ],
+            )
+            .map_err(|_| "native timing repair update failed")?;
     }
     Ok(ids.len().min(u32::MAX as usize) as u32)
 }
@@ -1016,6 +1085,22 @@ mod tests {
         }
         message(1, &chat)
     }
+    /// Shape observed in real failure blobs: the error is recorded but the
+    /// generation aborted before any token was counted or the response model
+    /// was assigned (usage exists but is empty, the stream window stays zero).
+    fn failed_blob(error: &[u8], with_timestamp: bool) -> Vec<u8> {
+        let mut chat = [
+            message(4, &[]),
+            message(21, b"gemini-test-high"),
+            message(12, &integer(1, 0)),
+        ]
+        .concat();
+        if with_timestamp {
+            let timestamp = [integer(1, 1791767907), integer(2, 999)].concat();
+            chat.extend(message(9, &message(4, &timestamp)));
+        }
+        [message(1, &chat), message(5, error)].concat()
+    }
     fn record() -> Record {
         parse_record(&blob(10, true), "trajectory", 1)
             .unwrap()
@@ -1095,10 +1180,15 @@ mod tests {
         let directory = tempfile::tempdir().unwrap();
         let r = record();
         import_records(&db, &[record()], directory.path(), 1).unwrap();
-        db.conn.lock().unwrap().execute(
-            "UPDATE proxy_request_logs SET data_source='pi_session', latency_ms=duration_ms, total_cost_usd='1.234'",
-            [],
-        ).unwrap();
+        db.conn
+            .lock()
+            .unwrap()
+            .execute(
+                "UPDATE proxy_request_logs SET data_source='pi_session', latency_ms=duration_ms, \
+             is_streaming=0, total_cost_usd='1.234'",
+                [],
+            )
+            .unwrap();
         assert_eq!(
             import_records(&db, &[record()], directory.path(), 1)
                 .unwrap()
@@ -1107,6 +1197,8 @@ mod tests {
         );
         let detail = db.get_request_detail(&r.request_id).unwrap().unwrap();
         assert_eq!(detail.latency_ms, 2100);
+        // The streaming flag is re-derived too: a 2 s window is a sustained stream.
+        assert!(detail.is_streaming);
         assert_eq!(detail.data_source.as_deref(), Some(ROW_SOURCE));
         assert_eq!(detail.total_cost_usd, "1.234");
         let conn = db.conn.lock().unwrap();
@@ -1119,6 +1211,93 @@ mod tests {
             .unwrap();
         assert_eq!(ledger_count, 1);
         assert!(timing_repair_ids(&conn, &[record()]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pre_gate_streaming_flags_are_repaired_in_place() {
+        // Builds before the sustained-window gate marked every native row
+        // streaming, so a sub-second buffered drain still passed the shared
+        // speed rule and displayed thousands of tok/s. Repair must re-derive
+        // the flag from the native window and leave tokens, pricing and the
+        // durable ledger alone.
+        let db = database();
+        let directory = tempfile::tempdir().unwrap();
+        db.conn.lock().unwrap().execute("INSERT OR REPLACE INTO model_pricing (model_id,display_name,input_cost_per_million,output_cost_per_million,cache_read_cost_per_million,cache_creation_cost_per_million) VALUES ('gemini-test-high','test','10','20','5','0')",[]).unwrap();
+        let mut burst = record();
+        burst.duration_ms = 500;
+        burst.output = 1200;
+        let mut sustained = record();
+        sustained.request_id = format!("{}sustained", record().request_id);
+        sustained.semantic_id = format!("{}sustained", record().semantic_id);
+        sustained.duration_ms = 8000;
+        sustained.output = 2000;
+        import_records(
+            &db,
+            &[burst.clone(), sustained.clone()],
+            directory.path(),
+            1,
+        )
+        .unwrap();
+        let cost_before = db
+            .get_request_detail(&burst.request_id)
+            .unwrap()
+            .unwrap()
+            .total_cost_usd;
+        {
+            let connection = db.conn.lock().unwrap();
+            // Simulate the pre-gate importer: every native row was streaming.
+            connection
+                .execute("UPDATE proxy_request_logs SET is_streaming=1", [])
+                .unwrap();
+            // The poisoned state: both windows feed the aggregate speed.
+            let (speed_tokens, speed_window): (i64, i64) = connection
+                .query_row(
+                    "SELECT SUM(output_tokens),SUM(latency_ms-first_token_ms) FROM proxy_request_logs \
+                     WHERE is_streaming=1 AND output_tokens>=100 AND latency_ms-first_token_ms>=100",
+                    [],
+                    |r| Ok((r.get(0)?, r.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!((speed_tokens, speed_window), (3200, 8500));
+        }
+        assert_eq!(
+            import_records(
+                &db,
+                &[burst.clone(), sustained.clone()],
+                directory.path(),
+                1
+            )
+            .unwrap()
+            .imported,
+            0
+        );
+        let burst_detail = db.get_request_detail(&burst.request_id).unwrap().unwrap();
+        // 500 ms is a buffered drain, not a stream: excluded from speed.
+        assert!(!burst_detail.is_streaming);
+        assert_eq!(burst_detail.latency_ms, 600); // first token 100 ms + a 500 ms drain
+        assert_eq!(burst_detail.first_token_ms, Some(100));
+        assert_eq!(burst_detail.duration_ms, Some(500));
+        let sustained_detail = db
+            .get_request_detail(&sustained.request_id)
+            .unwrap()
+            .unwrap();
+        assert!(sustained_detail.is_streaming);
+        let stats = db
+            .get_model_stats(None, None, Some("pi"), None, None)
+            .unwrap();
+        // Only the sustained window feeds the aggregate speed now.
+        assert_eq!(stats[0].speed_output_tokens, 2000);
+        assert_eq!(stats[0].speed_generation_ms, 8000);
+        // Costs and the dedup ledger stay untouched by the timing repair.
+        assert_eq!(burst_detail.total_cost_usd, cost_before);
+        let connection = db.conn.lock().unwrap();
+        let ledger_count: i64 = connection
+            .query_row("SELECT COUNT(*) FROM session_usage_dedup", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(ledger_count, 2);
+        assert!(timing_repair_ids(&connection, &[burst, sustained])
+            .unwrap()
+            .is_empty());
     }
 
     #[test]
@@ -1147,6 +1326,76 @@ mod tests {
         for data in [&[0x80][..], &[0], &[10, 9, 1], &[11], &[9, 1]] {
             assert!(Proto::parse(data).is_err());
         }
+    }
+
+    #[test]
+    fn failed_generations_import_with_their_real_status() {
+        // Real failure blobs (403 quota errors, cancelled generations) carry an
+        // error but no usage counts and no response model. They used to be
+        // dropped, so the ledger only ever showed success status codes. They
+        // must import as failed rows with the real error text and zero tokens.
+        let db = database();
+        let directory = tempfile::tempdir().unwrap();
+        let error =
+            b"Error 403, Message: Verify your account to continue., Status: PERMISSION_DENIED";
+        let failed = parse_record(&failed_blob(error, true), "trajectory-failed", 0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(failed.usage(), [0, 0, 0, 0]);
+        assert_eq!(failed.model, "gemini-test-high"); // display-name fallback
+        assert_eq!(failed.duration_ms, 0);
+        assert_eq!(
+            failed.error.as_deref(),
+            Some(std::str::from_utf8(error).unwrap())
+        );
+        import_records(&db, &[record(), failed], directory.path(), 1).unwrap();
+        let failed_id = format!(
+            "{PREFIX}{}",
+            digest(json!(["native", "trajectory-failed", 0]))
+        );
+        let detail = db.get_request_detail(&failed_id).unwrap().unwrap();
+        assert_eq!(detail.status_code, 500);
+        assert_eq!(
+            detail.error_message.as_deref(),
+            Some("Error 403, Message: Verify your account to continue., Status: PERMISSION_DENIED")
+        );
+        assert!(!detail.is_streaming);
+        assert_eq!(detail.first_token_ms, None);
+        assert_eq!(detail.total_cost_usd, "0");
+        let stats = db
+            .get_model_stats(None, None, Some("pi"), None, None)
+            .unwrap();
+        // Both rows bill under the same pricing basis, so the failure drags
+        // the shared group's success rate down to 50%.
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].success_rate, 50.0);
+        assert_eq!(stats[0].request_count, 2);
+    }
+
+    #[test]
+    fn failure_blobs_without_usable_metadata_are_skipped_safely() {
+        // No usable timestamp: the row cannot be attributed, so it is skipped
+        // instead of failing the whole source read.
+        assert!(
+            parse_record(&failed_blob(b"boom", false), "trajectory-failed", 1)
+                .unwrap()
+                .is_none()
+        );
+        // Without the error mark the old guards still hold: an empty-usage blob
+        // is not a generation record.
+        assert!(
+            parse_record(&failed_blob(b"", true), "trajectory-failed", 2)
+                .unwrap()
+                .is_none()
+        );
+        // The error text is sanitized, single-line and bounded.
+        let long = "x".repeat(600);
+        assert_eq!(error_text(long.as_bytes()).unwrap().chars().count(), 500);
+        assert_eq!(
+            error_text(b"line1\nline2\ttab").as_deref(),
+            Some("line1 line2 tab")
+        );
+        assert_eq!(error_text(b"   "), None);
     }
     #[test]
     fn descriptor_parser_never_executes_code() {

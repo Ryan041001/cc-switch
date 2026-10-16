@@ -1755,7 +1755,12 @@ describe("AppsPage concurrent CLI upgrades", () => {
     }
     expect(updateButton("Claude Code")).toBeDisabled();
     expect(updateButton("Claude Code")).toHaveAttribute("aria-busy", "true");
-    expect(updateButton("Codex")).toBeEnabled();
+    // 缓存过期，重新挂载时别的工具会重新探测版本；等探测完、按钮出来再点「全部更新」，
+    // 不然机器慢时这几行还在加载（与上游 v4.0.13 同步）。
+    await waitFor(() => {
+      expect(updateButton("Codex")).toBeEnabled();
+      expect(updateButton("Gemini CLI")).toBeEnabled();
+    });
     fireEvent.click(updateAllButton());
     await waitFor(() =>
       expect(mocks.runToolLifecycleAction).toHaveBeenCalledTimes(3),

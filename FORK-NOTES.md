@@ -113,6 +113,35 @@ Pi 具备高度可扩展的多模型叠加配置体系，其 OAuth 认证流与�
   若本地存在未提交改动，应先行暂存或提交，严禁执行破坏性重置。
 - 自动同步机制的范围限定为**仓库源码版本**，不触及本地已安装的桌面应用程序实体。本定制版本尚未配置独立的发布签名密钥链与差分更新服务，不会自动下载官方安装包覆盖本地客户端。
 
+### 上游适配：改动点清单与冲突预防
+
+原则：官方文件尽量保持原样，fork 功能放在 fork 自己的文件里；UI 拼装走已经在改的缝（目前只有 `src/App.tsx`），不另开新的官方文件改动点。每次合官方新版时，按下表逐项确认。
+
+**v4.0.14 适配记录**：官方重构了 `UsageDashboard.tsx`（定价页签并入设置、显示币种、记住选择），与 fork 的 `PiObservationPanel` 植入冲突。处理：该文件直接取官方版（零改动），面板挪到 `App.tsx` 用量视图里按 `usageAppFilter === "pi"` 渲染。注意行为有细微变化：以前在用量页内把筛选切到 Pi 也会出面板，现在只在从 Pi 应用页点"查看用量"进来时出；面板在 Pi 应用页和数据源抽屉里本来就有入口，功能没丢。
+
+**fork 自有文件（永不冲突）**：`integrations/pi/cc-switch-metrics.ts`、`src-tauri/src/services/pi_observation.rs`、`src-tauri/src/services/session_usage_pi.rs`、`src-tauri/src/services/session_usage_antigravity.rs`、`src/components/usage/PiObservationPanel.tsx`、`src/components/usage/PiObservationControl.tsx`、`src/lib/api/pi.ts`、`scripts/upstream-sync.mjs`、`.github/workflows/sync-upstream.yml`、`src-tauri/tauri.fork.conf.json`，以及 `tests/` 下 fork 自有测试。
+
+**改过的官方文件（合版时重点看）**：
+
+| 文件 | fork 改了什么 | 备注 |
+|---|---|---|
+| `src/App.tsx` | Pi 应用页、用量视图的 Pi 面板 | 允许改动的唯一 UI 缝 |
+| `src/components/usage/UsageDashboard.tsx` | 无（v4.0.14 起恢复 100% 官方） | 不要再往里加东西 |
+| `src/components/usage/UsageDataSourcesSheet.tsx` | 数据源抽屉加 `PiObservationControl` | 12 行，加在 Pi 分区 |
+| `src/components/usage/RequestDetailPanel.tsx` | Pi/Antigravity 的首字、速度、来源说明 | 70 行 |
+| `src/components/usage/RequestLogTable.tsx` | 同上，表格列 | 13 行 |
+| `src/components/usage/format.ts` | 速度/首字口径（Pi/Antigravity 分支） | 43 行，尽量收敛到独立 helper |
+| `src/components/usage/providerLabel.ts` | 数据源标签 | 3 行 |
+| `src/types/usage.ts` | 类型补充 | 4 行 |
+| `src/i18n/locales/*.json` | Pi/Antigravity 文案 key | 只加 key，不改官方原有文案 |
+| `src-tauri/src/services/usage_stats.rs` | 速度汇总口径 | 36 行 |
+| `src-tauri/src/services/session_usage.rs` | 5 行接入 | 保持最小 |
+| `src-tauri/src/services/mod.rs`、`lib.rs`、`commands/pi.rs` | 模块注册与命令 | 新增为主 |
+| `src-tauri/Cargo.toml` | 依赖 | 5 行 |
+| `.github/workflows/ci.yml` | fork 的 CI 接入 | 31 行 |
+
+**合版操作流程**：`git switch -c fix/upstream-vX.Y.Z-merge origin/main` → `git merge vX.Y.Z` → 若冲突，官方文件取官方版，fork 功能挪到 fork 自有文件或 `App.tsx` 里重接 → `pnpm typecheck`、`vitest` 全量、`cargo check` → 推分支开 PR 走 CI → fast-forward 合 `main`。
+
 ---
 
 ## 本地构建与交付规范

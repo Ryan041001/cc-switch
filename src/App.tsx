@@ -84,6 +84,7 @@ import {
 } from "@/components/providers/forms/helpers/opencodeFormUtils";
 import { EditProviderDialog } from "@/components/providers/EditProviderDialog";
 import { ConfirmDialog } from "@/components/ConfirmDialog";
+import { OpenTerminalDialog } from "@/components/providers/OpenTerminalDialog";
 import { discardUnsavedChanges, hasUnsavedChanges } from "@/lib/unsavedChanges";
 import { SettingsPage } from "@/components/settings/SettingsPage";
 import { AuthCenterPanel } from "@/components/settings/AuthCenterPanel";
@@ -270,6 +271,9 @@ function App() {
     provider: Provider;
     action: "remove" | "delete";
   } | null>(null);
+  const [terminalProvider, setTerminalProvider] = useState<Provider | null>(
+    null,
+  );
   const [envConflicts, setEnvConflicts] = useState<EnvConflict[]>([]);
   const [showEnvBanner, setShowEnvBanner] = useState(false);
 
@@ -1028,32 +1032,6 @@ function App() {
       : message;
   }, [activeApp, confirmAction, piCurrentState?.defaultProviderId, t]);
 
-  const handleOpenTerminal = async (provider: Provider) => {
-    try {
-      const selectedDir = await settingsApi.pickDirectory();
-      if (!selectedDir) {
-        return;
-      }
-
-      await providersApi.openTerminal(provider.id, activeApp, {
-        cwd: selectedDir,
-      });
-      toast.success(
-        t("provider.terminalOpened", {
-          defaultValue: "终端已打开",
-        }),
-      );
-    } catch (error) {
-      console.error("[App] Failed to open terminal", error);
-      const errorMessage = extractErrorMessage(error);
-      toast.error(
-        t("provider.terminalOpenFailed", {
-          defaultValue: "打开终端失败",
-        }) + (errorMessage ? `: ${errorMessage}` : ""),
-      );
-    }
-  };
-
   const handleImportSuccess = async () => {
     try {
       await queryClient.invalidateQueries({
@@ -1272,7 +1250,7 @@ function App() {
     onDuplicate: handleDuplicateProvider,
     onConfigureUsage: setUsageProvider,
     onOpenWebsite: handleOpenWebsite,
-    onOpenTerminal: activeApp === "claude" ? handleOpenTerminal : undefined,
+    onOpenTerminal: activeApp === "claude" ? setTerminalProvider : undefined,
     onCreate: () => openAddProvider(currentModeView),
     searchOpen: providerSearchOpen,
     onSearchOpenChange: setProviderSearchOpen,
@@ -1429,10 +1407,19 @@ function App() {
     switch (currentView) {
       case "usage":
         return (
-          <UsagePage
-            initialAppType={usageAppFilter}
-            onOpenRoutingSettings={() => openSettings("routing")}
-          />
+          <>
+            {/* Pi 实时观测面板：放在用量页顶部。刻意不写进 UsageDashboard，
+                让那个文件保持 100% 官方，之后官方再重构它也不会冲突。 */}
+            {usageAppFilter === "pi" && (
+              <div className="px-6 pt-4">
+                <PiObservationPanel />
+              </div>
+            )}
+            <UsagePage
+              initialAppType={usageAppFilter}
+              onOpenRoutingSettings={() => openSettings("routing")}
+            />
+          </>
         );
       case "auth":
         return (
@@ -1629,6 +1616,12 @@ function App() {
           }}
         />
       )}
+
+      <OpenTerminalDialog
+        provider={terminalProvider}
+        appId={activeApp}
+        onClose={() => setTerminalProvider(null)}
+      />
 
       <ConfirmDialog
         isOpen={Boolean(confirmAction)}

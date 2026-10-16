@@ -96,7 +96,6 @@ import { UsagePage } from "@/components/usage/UsagePage";
 import { PiObservationPanel } from "@/components/usage/PiObservationPanel";
 import { EnvWarningBanner } from "@/components/env/EnvWarningBanner";
 import { SwitchModePanel } from "@/components/providers/mode/SwitchModePanel";
-import { DesktopAccessBar } from "@/components/providers/mode/DesktopAccessBar";
 import { proxyApi } from "@/lib/api/proxy";
 import type { AppMode, StartupAttachFailure } from "@/types/proxy";
 import UsageScriptModal from "@/components/UsageScriptModal";
@@ -133,11 +132,7 @@ import OpenClawHealthBanner from "@/components/openclaw/OpenClawHealthBanner";
 import HermesMemoryPanel, {
   HermesMemorySaveButton,
 } from "@/components/hermes/HermesMemoryPanel";
-import {
-  APP_IDS,
-  DEFAULT_VISIBLE_APPS,
-  isProxyAppId,
-} from "@/config/appConfig";
+import { APP_IDS, DEFAULT_VISIBLE_APPS, isModeAppId } from "@/config/appConfig";
 
 interface SyncStatusUpdatedPayload {
   source?: string;
@@ -300,7 +295,7 @@ function App() {
   }, [activeApp, currentView]);
 
   const { isRunning: isProxyRunning, takeoverStatus } = useProxyStatus();
-  const proxyAppId = isProxyAppId(activeApp) ? activeApp : null;
+  const modeAppId = isModeAppId(activeApp) ? activeApp : null;
   // 换了应用、新面板还没报上来时为 undefined：表单按应用实际生效的模式
   const currentModeView =
     providerModeView?.app === activeApp ? providerModeView.view : undefined;
@@ -308,10 +303,9 @@ function App() {
     setFormModeView(modeView);
     setIsAddOpen(true);
   };
-  const currentAppUsesProxy =
-    proxyAppId !== null || activeApp === "claude-desktop";
-  const isCurrentAppTakeoverActive = proxyAppId
-    ? takeoverStatus?.[proxyAppId] || false
+  const currentAppUsesProxy = modeAppId !== null;
+  const isCurrentAppTakeoverActive = modeAppId
+    ? takeoverStatus?.[modeAppId] || false
     : false;
 
   const { data, isLoading, refetch } = useProvidersQuery(activeApp, {
@@ -1285,14 +1279,14 @@ function App() {
   };
 
   const renderProviderList = () => {
-    if (proxyAppId) {
+    if (modeAppId) {
       const startupFailure = startupFailures.find(
-        (failure) => failure.appType === proxyAppId,
+        (failure) => failure.appType === modeAppId,
       );
       return (
         <SwitchModePanel
-          key={proxyAppId}
-          app={proxyAppId}
+          key={modeAppId}
+          app={modeAppId}
           providers={providers}
           currentProviderId={currentProviderId}
           isLoading={isLoading}
@@ -1300,14 +1294,14 @@ function App() {
           onSwitch={switchProvider}
           onOpenRoutingSettings={() => openSettings("routing")}
           needsRouteRequest={
-            trayNeedsRoute?.app === proxyAppId ? trayNeedsRoute : undefined
+            trayNeedsRoute?.app === modeAppId ? trayNeedsRoute : undefined
           }
           onNeedsRouteHandled={() => setTrayNeedsRoute(null)}
           onViewChange={handleProviderModeViewChange}
           startupFailure={startupFailure}
           onDismissStartupFailure={() =>
             setStartupFailures((list) =>
-              list.filter((failure) => failure.appType !== proxyAppId),
+              list.filter((failure) => failure.appType !== modeAppId),
             )
           }
           {...listCallbacks}
@@ -1323,12 +1317,6 @@ function App() {
       >
         <div className="space-y-4">
           {activeApp === "pi" && <PiObservationPanel />}
-          {activeApp === "claude-desktop" && (
-            <DesktopAccessBar
-              current={providers[currentProviderId]}
-              onOpenRoutingSettings={() => openSettings("routing")}
-            />
-          )}
           <ProviderList
             {...listCallbacks}
             providers={providers}

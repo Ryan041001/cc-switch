@@ -1,0 +1,21 @@
+name: Debug List Artifacts
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  debug:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: fork-release-*
+          path: release-assets
+          merge-multiple: true
+      - name: List files
+        run: |
+          echo "=== all files ==="
+          find release-assets -type f | sort
+          echo "=== sizes ==="
+          du -sh release-assets/*

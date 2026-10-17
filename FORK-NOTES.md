@@ -172,11 +172,11 @@ PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=stable \
 
 ### Fork 发布流程（2026-10-17 起）
 
-- Workflow：`.github/workflows/release-fork.yml`，打 tag 即构建（Windows MSI、macOS universal DMG、Linux AppImage），发布 GitHub Release 并生成 `latest.json`，客户端"检查更新"可直接升级。
-- 打 tag 格式：`fork-v<semver>`，例如 `fork-v4.0.15-fork1`。
+- Workflow：`.github/workflows/release-fork.yml`，打 tag 即构建（Windows MSI、macOS ARM64 DMG、Linux AppImage），发布 GitHub Release 并生成 `latest.json`，客户端"检查更新"可直接升级。
+- 打 tag 格式：`fork-v<X.Y.Z>` 纯数字，例如 `fork-v4.0.15`。
   - 版本号必须高于当前已安装版本（updater 按 semver 比对）。
-  - 惯例：上游 patch 号 +1 再加 `-forkN` 后缀，避免与上游正式版撞号。
-- 构建时用 `--config src-tauri/tauri.fork.conf.json` 覆盖，并把 tag 里的版本号写入包（覆盖源码里的上游版本号）。
+  - 惯例：上游 patch 号 +1；必须纯数字，Windows MSI 不接受带后缀版本。
+- 构建时用 `--config src-tauri/tauri.fork.conf.json` 覆盖，并把 tag 里的版本号写入包（顶层 `version` 字段）。
 - 手动触发 workflow_dispatch 只构建不发布，用于干跑验证。
 - 注意：未做 Apple 公证 / Windows 代码签名，首次安装会有系统安全提示，属正常情况。
 

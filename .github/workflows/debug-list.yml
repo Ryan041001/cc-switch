@@ -17,7 +17,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
       - name: List files
         run: |
-          echo "=== all files ==="
-          find release-assets -type f | sort
-          echo "=== sizes ==="
-          du -sh release-assets/*
+          find release-assets -type f | sort | while read -r f; do
+            size=$(du -h "$f" | cut -f1)
+            echo "::notice::$f [$size]"
+          done

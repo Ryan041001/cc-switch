@@ -1,0 +1,40 @@
+name: Fix latest.json URLs
+on:
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  fix:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Write fixed latest.json
+        run: |
+          cat > /tmp/latest.json << 'JSONEOF'
+          {
+            "version": "4.0.15",
+            "notes": "",
+            "pub_date": "2026-10-17T03:17:42Z",
+            "platforms": {
+              "darwin-aarch64": {
+                "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZXphTmpaQVBqMEhORGlnSFZHSE9la1VOQ0lMV2dFck9qb2VQNUhCcS81djk4UDlFcHhlSEZMSHZKTi8xMTk5V0ZSSllPN2FjdTNqL0xwZkZFQy9FcVNJNjRBektoREFBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMjA2NjY5CWZpbGU6Q0MgU3dpdGNoLmFwcC50YXIuZ3oKandWZkc1NGFFMmVhUk0yUDlqYlp3aU81bllQZGFzUCtBZGJpa20xQVlOQ3hoS3BOeXFqSFphdEZhTXFTdm4ycVA4dUFENXpvaWR4TnBkVi9pSVZrRGc9PQo=",
+                "url": "https://github.com/Ryan041001/cc-switch/releases/download/fork-v4.0.15/CC.Switch.app.tar.gz"
+              },
+              "windows-x86_64": {
+                "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZXphTmpaQVBqMEJnODRkZ1MvMGQxL3Zsdk1IQXNOZ1FuTGFROVZHN0poRmRacTlTMTRpOXNHUWVxdGsxVEk0MUNYeG9MNUFtTUNSTm5zZDN2ZktNRFAvS0JUajg4aWd3PQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMjA3MDQ2CWZpbGU6Q0MgU3dpdGNoXzQuMC4xNV94NjRfZW4tVVMubXNpCk9WSmJzWFh3cG1KRk1oK1I3RHNNTDlOeElVMW9WVkRXWFhOTFVKdDVZdldiWktvczhScDBaa0lzeE9MOCtrelZ6MU0zWmMwai8xVjM0ZitwRHVmRUJnPT0K",
+                "url": "https://github.com/Ryan041001/cc-switch/releases/download/fork-v4.0.15/CC.Switch_4.0.15_x64_en-US.msi"
+              },
+              "linux-x86_64": {
+                "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVRZXphTmpaQVBqME1UU2ZrRjZXemZlTzY4VEwxNWVncWUzeGhYeENZLzhISlpZc2t0R1hhb21MTnEzZHlPeTZlYWJVVFdTVDl2b1RpV293VE82ZStYSGhtdzJiS25BU2dBPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzkyMjA2NzQxCWZpbGU6Q0MgU3dpdGNoXzQuMC4xNV9hbWQ2NC5BcHBJbWFnZQoxZUs2MWNtRVhtaVcvU0pGU1BVZzZHdWR2elJpempKRkRHQXppTzVEN1lRL1RXT3FhNmswVVRxVFM2cmRJTjFSckxWUXRPNk5kWFlBTFZSMXhjUmxEQT09Cg==",
+                "url": "https://github.com/Ryan041001/cc-switch/releases/download/fork-v4.0.15/CC.Switch_4.0.15_amd64.AppImage"
+              }
+            }
+          }
+          JSONEOF
+          cat /tmp/latest.json | python3 -c "import json,sys; json.load(sys.stdin); print('json valid')"
+
+      - name: Upload to release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload fork-v4.0.15 /tmp/latest.json --clobber
+          echo "uploaded"

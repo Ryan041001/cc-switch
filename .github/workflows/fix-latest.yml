@@ -9,7 +9,8 @@ jobs:
     steps:
       - name: Write fixed latest.json
         run: |
-          cat > /tmp/latest.json << 'JSONEOF'
+          mkdir -p /tmp/fixassets
+          cat > /tmp/fixassets/latest.json << 'JSONEOF'
           {
             "version": "4.0.15",
             "notes": "",
@@ -30,11 +31,10 @@ jobs:
             }
           }
           JSONEOF
-          cat /tmp/latest.json | python3 -c "import json,sys; json.load(sys.stdin); print('json valid')"
+          python3 -c "import json; json.load(open('/tmp/fixassets/latest.json')); print('json valid')"
 
       - name: Upload to release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          gh release upload fork-v4.0.15 /tmp/latest.json --clobber
-          echo "uploaded"
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: fork-v4.0.15
+          files: /tmp/fixassets/latest.json

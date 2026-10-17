@@ -1,0 +1,209 @@
+# Fork 专属发布流程：打 tag 即构建三平台安装包并发布 GitHub Release，
+# 客户端内"检查更新"通过 latest.json 拉到新版。
+#
+# 打 tag 格式：fork-v<semver>，例如 fork-v4.0.15-fork1
+#   - 版本号必须高于你当前装的版本（updater 按 semver 比对）
+#   - 惯例：上游 patch+1 再加 -forkN 后缀，避免和上游正式版撞号
+# 手动触发（workflow_dispatch）只构建不发布，用于干跑验证。
+
+name: Fork Release
+
+on:
+  push:
+    tags:
+      - 'fork-v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            bundle: msi
+          - os: macos-14
+            bundle: dmg
+          - os: ubuntu-22.04
+            bundle: appimage
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Read pinned Rust toolchain
+        id: rust-toolchain
+        shell: bash
+        run: |
+          channel=$(sed -nE 's/^channel *= *"([^"]+)".*/\1/p' rust-toolchain.toml)
+          test -n "$channel"
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: ${{ steps.rust-toolchain.outputs.channel }}
+          targets: ${{ runner.os == 'macOS' && 'x86_64-apple-darwin' || '' }}
+
+      - name: Install Linux system deps
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euxo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config curl wget file patchelf \
+            libssl-dev \
+            libgtk-3-dev librsvg2-dev libayatana-appindicator3-dev
+          sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.1-dev \
+            || sudo apt-get install -y --no-install-recommends libwebkit2gtk-4.0-dev
+          sudo apt-get install -y --no-install-recommends libsoup-3.0-dev \
+            || sudo apt-get install -y --no-install-recommends libsoup2.4-dev
+
+      - name: Setup pnpm
+        env:
+          COREPACK_ENABLE_DOWNLOAD_PROMPT: "0"
+        run: |
+          corepack enable
+          corepack install
+          pnpm --version
+
+      - name: Install frontend deps
+        run: pnpm install --frozen-lockfile
+
+      - name: Prepare Tauri signing key
+        uses: ./.github/actions/prepare-tauri-signing-key
+        with:
+          private-key: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+
+      # 版本号取自 tag（去掉 fork-v 前缀），覆盖源码里的上游版本号，
+      # 保证 updater 能识别出这是一个新版本。
+      - name: Build Tauri App
+        shell: bash
+        env:
+          FORK_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then
+            VERSION="${FORK_VERSION#fork-v}"
+            test -n "$VERSION"
+            VERSION_ARGS=(--config "{\"package\":{\"version\":\"$VERSION\"}}")
+          else
+            VERSION_ARGS=()
+          fi
+          TARGET_ARGS=()
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            TARGET_ARGS=(--target universal-apple-darwin)
+          fi
+          pnpm tauri build \
+            --config src-tauri/tauri.fork.conf.json \
+            "${VERSION_ARGS[@]}" \
+            "${TARGET_ARGS[@]}" \
+            --bundles "${{ matrix.bundle }}"
+
+      - name: Collect release assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p release-assets
+          BUNDLE_DIR="src-tauri/target/release/bundle"
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            BUNDLE_DIR="src-tauri/target/universal-apple-darwin/release/bundle"
+          fi
+          case "${{ matrix.bundle }}" in
+            msi)
+              f=$(find "$BUNDLE_DIR/msi" -name '*.msi' | head -1)
+              cp "$f" release-assets/
+              cp "$f.sig" release-assets/ 2>/dev/null || true
+              # updater 用的是 zip 包
+              z=$(find "$BUNDLE_DIR/msi" -name '*.msi.zip' | head -1)
+              if [ -n "$z" ]; then cp "$z" release-assets/; cp "$z.sig" release-assets/; fi
+              ;;
+            dmg)
+              f=$(find "$BUNDLE_DIR/dmg" -name '*.dmg' | head -1)
+              cp "$f" release-assets/
+              t=$(find "$BUNDLE_DIR/macos" -name '*.app.tar.gz' | head -1)
+              if [ -n "$t" ]; then cp "$t" release-assets/; cp "$t.sig" release-assets/; fi
+              ;;
+            appimage)
+              f=$(find "$BUNDLE_DIR/appimage" -name '*.AppImage' | head -1)
+              cp "$f" release-assets/
+              t=$(find "$BUNDLE_DIR/appimage" -name '*.AppImage.tar.gz' | head -1)
+              if [ -n "$t" ]; then cp "$t" release-assets/; cp "$t.sig" release-assets/; fi
+              ;;
+          esac
+          ls -la release-assets
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: fork-release-${{ matrix.os }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish GitHub Release
+    runs-on: ubuntu-22.04
+    needs: build
+    # 只有推 tag 才真正发布；手动触发只验证构建
+    if: github.event_name == 'push' && github.ref_type == 'tag'
+    permissions:
+      contents: write
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v8
+        with:
+          pattern: fork-release-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Generate latest.json
+        env:
+          REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          ls -la release-assets
+          python3 - << 'EOF' > release-assets/latest.json
+          import json, os, glob, datetime
+          tag = os.environ["TAG"]
+          repo = os.environ["REPO"]
+          version = tag.removeprefix("fork-v")
+          base = f"https://github.com/{repo}/releases/download/{tag}"
+          def entry(pattern):
+              f = glob.glob("release-assets/" + pattern)[0]
+              sig = open(f + ".sig").read().strip()
+              return {"signature": sig, "url": f"{base}/{os.path.basename(f)}"}
+          mac = entry("*.app.tar.gz")      # universal 包同时服务两个 macOS 架构
+          platforms = {
+              "darwin-aarch64": mac,
+              "darwin-x86_64": mac,
+              "windows-x86_64": entry("*.msi.zip"),
+              "linux-x86_64": entry("*.AppImage.tar.gz"),
+          }
+          json.dump({
+              "version": version,
+              "notes": "",
+              "pub_date": datetime.datetime.now(datetime.timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+              "platforms": platforms,
+          }, open("release-assets/latest.json", "w"), indent=2)
+          EOF
+          cat release-assets/latest.json
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          files: release-assets/*

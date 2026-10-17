@@ -167,8 +167,18 @@ PATH="$HOME/.cargo/bin:$PATH" RUSTUP_TOOLCHAIN=stable \
 **必须采用 Fork 专用配置构建**：
 
 - `src-tauri/tauri.fork.conf.json` 已显式剔除官方自动更新服务端点，防止客户端静默下载官方发行版进而覆盖定制特性。
-- 当前分支尚未建立专有签名密钥体系与 `latest.json` 自动更新服务，暂不支持应用内热更新，版本升级均通过本地构建或手动安装交付。
+- Fork 已建立专有签名密钥体系：私钥存于仓库 Secrets（`TAURI_SIGNING_PRIVATE_KEY`），公钥写入 `tauri.fork.conf.json`。应用内更新走 fork 自己的 releases，见下节。
 - 上游默认配置仅在合并对比时作参考对齐，严禁直接用于编译发布二进制安装包。
+
+### Fork 发布流程（2026-10-17 起）
+
+- Workflow：`.github/workflows/release-fork.yml`，打 tag 即构建（Windows MSI、macOS universal DMG、Linux AppImage），发布 GitHub Release 并生成 `latest.json`，客户端"检查更新"可直接升级。
+- 打 tag 格式：`fork-v<semver>`，例如 `fork-v4.0.15-fork1`。
+  - 版本号必须高于当前已安装版本（updater 按 semver 比对）。
+  - 惯例：上游 patch 号 +1 再加 `-forkN` 后缀，避免与上游正式版撞号。
+- 构建时用 `--config src-tauri/tauri.fork.conf.json` 覆盖，并把 tag 里的版本号写入包（覆盖源码里的上游版本号）。
+- 手动触发 workflow_dispatch 只构建不发布，用于干跑验证。
+- 注意：未做 Apple 公证 / Windows 代码签名，首次安装会有系统安全提示，属正常情况。
 
 ---
 

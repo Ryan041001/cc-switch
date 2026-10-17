@@ -1,9 +1,9 @@
 # Fork 专属发布流程：打 tag 即构建三平台安装包并发布 GitHub Release，
 # 客户端内"检查更新"通过 latest.json 拉到新版。
 #
-# 打 tag 格式：fork-v<semver>，例如 fork-v4.0.15-fork1
+# 打 tag 格式：fork-v<X.Y.Z> 纯数字版本，例如 fork-v4.0.15
 #   - 版本号必须高于你当前装的版本（updater 按 semver 比对）
-#   - 惯例：上游 patch+1 再加 -forkN 后缀，避免和上游正式版撞号
+#   - 惯例：上游 patch 号 +1（必须纯数字，Windows MSI 不接受带后缀的版本）
 # 手动触发（workflow_dispatch）只构建不发布，用于干跑验证。
 #
 # macOS 只打 ARM64（runner 是 macos-14 arm64；universal 构建曾秒挂，
@@ -103,8 +103,12 @@ jobs:
           if [ "${{ github.event_name }}" = "push" ]; then
             # 版本号取自 tag（去掉 fork-v 前缀），覆盖源码里的上游版本号，
             # 保证 updater 能识别出这是一个新版本。
+            # 必须是纯数字 X.Y.Z：Windows MSI 不接受带后缀的版本。
             V="${FORK_VERSION#fork-v}"
-            test -n "$V"
+            case "$V" in
+              [0-9]*.[0-9]*.[0-9]*) ;;
+              *) echo "❌ 版本号必须是纯数字 X.Y.Z，当前：$V" >&2; exit 1 ;;
+            esac
             set -- "$@" --config "{\"version\":\"$V\"}"
           fi
           set -- "$@" --bundles "${{ matrix.bundle }}"

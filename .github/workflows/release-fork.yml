@@ -105,7 +105,7 @@ jobs:
             # 保证 updater 能识别出这是一个新版本。
             V="${FORK_VERSION#fork-v}"
             test -n "$V"
-            set -- "$@" --config "{\"package\":{\"version\":\"$V\"}}"
+            set -- "$@" --config "{\"version\":\"$V\"}"
           fi
           set -- "$@" --bundles "${{ matrix.bundle }}"
           pnpm tauri build "$@"

@@ -31,7 +31,7 @@ jobs:
           - os: windows-2022
             bundle: msi
           - os: macos-14
-            bundle: dmg
+            bundle: app,dmg
           - os: ubuntu-22.04
             bundle: appimage
 
@@ -123,23 +123,28 @@ jobs:
           case "${{ matrix.bundle }}" in
             msi)
               f=$(find "$BUNDLE_DIR/msi" -name '*.msi' | head -1)
+              test -n "$f" || { echo "❌ No MSI found" >&2; exit 1; }
               cp "$f" release-assets/
-              cp "$f.sig" release-assets/ 2>/dev/null || true
-              # updater 用的是 zip 包
-              z=$(find "$BUNDLE_DIR/msi" -name '*.msi.zip' | head -1)
-              if [ -n "$z" ]; then cp "$z" release-assets/; cp "$z.sig" release-assets/; fi
+              test -f "$f.sig" || { echo "❌ No MSI sig found" >&2; exit 1; }
+              cp "$f.sig" release-assets/
               ;;
-            dmg)
-              f=$(find "$BUNDLE_DIR/dmg" -name '*.dmg' | head -1)
-              cp "$f" release-assets/
+            app,dmg)
+              # updater 用 .app.tar.gz；dmg 供手动下载安装
               t=$(find "$BUNDLE_DIR/macos" -name '*.app.tar.gz' | head -1)
-              if [ -n "$t" ]; then cp "$t" release-assets/; cp "$t.sig" release-assets/; fi
+              test -n "$t" || { echo "❌ No app.tar.gz found" >&2; exit 1; }
+              cp "$t" release-assets/
+              test -f "$t.sig" || { echo "❌ No app.tar.gz sig found" >&2; exit 1; }
+              cp "$t.sig" release-assets/
+              f=$(find "$BUNDLE_DIR/dmg" -name '*.dmg' | head -1)
+              test -n "$f" || { echo "❌ No DMG found" >&2; exit 1; }
+              cp "$f" release-assets/
               ;;
             appimage)
-              f=$(find "$BUNDLE_DIR/appimage" -name '*.AppImage' | head -1)
+              f=$(find "$BUNDLE_DIR/appimage" -name '*.AppImage' ! -name '*.tar.gz' | head -1)
+              test -n "$f" || { echo "❌ No AppImage found" >&2; exit 1; }
               cp "$f" release-assets/
-              t=$(find "$BUNDLE_DIR/appimage" -name '*.AppImage.tar.gz' | head -1)
-              if [ -n "$t" ]; then cp "$t" release-assets/; cp "$t.sig" release-assets/; fi
+              test -f "$f.sig" || { echo "❌ No AppImage sig found" >&2; exit 1; }
+              cp "$f.sig" release-assets/
               ;;
           esac
           ls -la release-assets
@@ -185,11 +190,11 @@ jobs:
               f = glob.glob("release-assets/" + pattern)[0]
               sig = open(f + ".sig").read().strip()
               return {"signature": sig, "url": f"{base}/{os.path.basename(f)}"}
-          mac = entry("*.app.tar.gz")      # 仅 ARM64
+          mac = entry("*.app.tar.gz")
           platforms = {
               "darwin-aarch64": mac,
-              "windows-x86_64": entry("*.msi.zip"),
-              "linux-x86_64": entry("*.AppImage.tar.gz"),
+              "windows-x86_64": entry("*.msi"),
+              "linux-x86_64": entry("*.AppImage"),
           }
           json.dump({
               "version": version,

@@ -147,6 +147,15 @@ jobs:
               cp "$f.sig" release-assets/
               ;;
           esac
+          # GitHub 上传 release asset 时会把文件名中的空格换成点，
+          # 这里提前统一，避免 latest.json 里的链接 404。
+          for f in release-assets/*; do
+            n=$(basename "$f" | tr ' ' '.')
+            if [ "$(basename "$f")" != "$n" ]; then
+              mv "$f" "release-assets/$n"
+            fi
+          done
+          # .sig 文件名也要同步（签名内容不受影响，只改文件名）
           ls -la release-assets
 
       - name: Upload artifacts
